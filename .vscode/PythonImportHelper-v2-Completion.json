@@ -1,0 +1,953 @@
+[
+    {
+        "label": "json",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "json",
+        "description": "json",
+        "detail": "json",
+        "documentation": {}
+    },
+    {
+        "label": "logging",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "logging",
+        "description": "logging",
+        "detail": "logging",
+        "documentation": {}
+    },
+    {
+        "label": "Any",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Dict",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Iterator",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "List",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Optional",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Tuple",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Any",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Dict",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Iterator",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "List",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Optional",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Any",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Callable",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Dict",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Iterator",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "List",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Optional",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Any",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Dict",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "List",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Optional",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Any",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Callable",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Dict",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "List",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Optional",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Any",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Dict",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "List",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Optional",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Any",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Dict",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "List",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Optional",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Any",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Dict",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "List",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Optional",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Any",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Dict",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Any",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "ABC",
+        "importPath": "abc",
+        "description": "abc",
+        "isExtraImport": true,
+        "detail": "abc",
+        "documentation": {}
+    },
+    {
+        "label": "abstractmethod",
+        "importPath": "abc",
+        "description": "abc",
+        "isExtraImport": true,
+        "detail": "abc",
+        "documentation": {}
+    },
+    {
+        "label": "dataclass",
+        "importPath": "dataclasses",
+        "description": "dataclasses",
+        "isExtraImport": true,
+        "detail": "dataclasses",
+        "documentation": {}
+    },
+    {
+        "label": "field",
+        "importPath": "dataclasses",
+        "description": "dataclasses",
+        "isExtraImport": true,
+        "detail": "dataclasses",
+        "documentation": {}
+    },
+    {
+        "label": "dataclass",
+        "importPath": "dataclasses",
+        "description": "dataclasses",
+        "isExtraImport": true,
+        "detail": "dataclasses",
+        "documentation": {}
+    },
+    {
+        "label": "field",
+        "importPath": "dataclasses",
+        "description": "dataclasses",
+        "isExtraImport": true,
+        "detail": "dataclasses",
+        "documentation": {}
+    },
+    {
+        "label": "dataclass",
+        "importPath": "dataclasses",
+        "description": "dataclasses",
+        "isExtraImport": true,
+        "detail": "dataclasses",
+        "documentation": {}
+    },
+    {
+        "label": "field",
+        "importPath": "dataclasses",
+        "description": "dataclasses",
+        "isExtraImport": true,
+        "detail": "dataclasses",
+        "documentation": {}
+    },
+    {
+        "label": "Enum",
+        "importPath": "enum",
+        "description": "enum",
+        "isExtraImport": true,
+        "detail": "enum",
+        "documentation": {}
+    },
+    {
+        "label": "Enum",
+        "importPath": "enum",
+        "description": "enum",
+        "isExtraImport": true,
+        "detail": "enum",
+        "documentation": {}
+    },
+    {
+        "label": "traceback",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "traceback",
+        "description": "traceback",
+        "detail": "traceback",
+        "documentation": {}
+    },
+    {
+        "label": "ThreadPoolExecutor",
+        "importPath": "concurrent.futures",
+        "description": "concurrent.futures",
+        "isExtraImport": true,
+        "detail": "concurrent.futures",
+        "documentation": {}
+    },
+    {
+        "label": "TimeoutError",
+        "importPath": "concurrent.futures",
+        "description": "concurrent.futures",
+        "isExtraImport": true,
+        "detail": "concurrent.futures",
+        "documentation": {}
+    },
+    {
+        "label": "time",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "time",
+        "description": "time",
+        "detail": "time",
+        "documentation": {}
+    },
+    {
+        "label": "os",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "os",
+        "description": "os",
+        "detail": "os",
+        "documentation": {}
+    },
+    {
+        "label": "Body",
+        "importPath": "fastapi",
+        "description": "fastapi",
+        "isExtraImport": true,
+        "detail": "fastapi",
+        "documentation": {}
+    },
+    {
+        "label": "FastAPI",
+        "importPath": "fastapi",
+        "description": "fastapi",
+        "isExtraImport": true,
+        "detail": "fastapi",
+        "documentation": {}
+    },
+    {
+        "label": "annotations",
+        "importPath": "__future__",
+        "description": "__future__",
+        "isExtraImport": true,
+        "detail": "__future__",
+        "documentation": {}
+    },
+    {
+        "label": "importlib.util",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "importlib.util",
+        "description": "importlib.util",
+        "detail": "importlib.util",
+        "documentation": {}
+    },
+    {
+        "label": "inspect",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "inspect",
+        "description": "inspect",
+        "detail": "inspect",
+        "documentation": {}
+    },
+    {
+        "label": "sys",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "sys",
+        "description": "sys",
+        "detail": "sys",
+        "documentation": {}
+    },
+    {
+        "label": "Path",
+        "importPath": "pathlib",
+        "description": "pathlib",
+        "isExtraImport": true,
+        "detail": "pathlib",
+        "documentation": {}
+    },
+    {
+        "label": "Path",
+        "importPath": "pathlib",
+        "description": "pathlib",
+        "isExtraImport": true,
+        "detail": "pathlib",
+        "documentation": {}
+    },
+    {
+        "label": "asyncio",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "asyncio",
+        "description": "asyncio",
+        "detail": "asyncio",
+        "documentation": {}
+    },
+    {
+        "label": "random",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "random",
+        "description": "random",
+        "detail": "random",
+        "documentation": {}
+    },
+    {
+        "label": "deepcopy",
+        "importPath": "copy",
+        "description": "copy",
+        "isExtraImport": true,
+        "detail": "copy",
+        "documentation": {}
+    },
+    {
+        "label": "load_dotenv",
+        "importPath": "dotenv",
+        "description": "dotenv",
+        "isExtraImport": true,
+        "detail": "dotenv",
+        "documentation": {}
+    },
+    {
+        "label": "logger",
+        "importPath": "loguru",
+        "description": "loguru",
+        "isExtraImport": true,
+        "detail": "loguru",
+        "documentation": {}
+    },
+    {
+        "label": "Task",
+        "importPath": "autoppia_iwa.src.data_generation.tasks.classes",
+        "description": "autoppia_iwa.src.data_generation.tasks.classes",
+        "isExtraImport": true,
+        "detail": "autoppia_iwa.src.data_generation.tasks.classes",
+        "documentation": {}
+    },
+    {
+        "label": "AsyncStatefulEvaluator",
+        "importPath": "autoppia_iwa.src.evaluation.stateful_evaluator",
+        "description": "autoppia_iwa.src.evaluation.stateful_evaluator",
+        "isExtraImport": true,
+        "detail": "autoppia_iwa.src.evaluation.stateful_evaluator",
+        "documentation": {}
+    },
+    {
+        "label": "LLMWebAgent",
+        "importPath": "autoppia_rl.src.operator.agent",
+        "description": "autoppia_rl.src.operator.agent",
+        "isExtraImport": true,
+        "detail": "autoppia_rl.src.operator.agent",
+        "documentation": {}
+    },
+    {
+        "label": "EpisodeRunner",
+        "importPath": "autoppia_rl.src.operator.runner",
+        "description": "autoppia_rl.src.operator.runner",
+        "isExtraImport": true,
+        "detail": "autoppia_rl.src.operator.runner",
+        "documentation": {}
+    },
+    {
+        "label": "app",
+        "importPath": "api",
+        "description": "api",
+        "isExtraImport": true,
+        "detail": "api",
+        "documentation": {}
+    },
+    {
+        "label": "AnthropicService",
+        "kind": 6,
+        "importPath": "llm_agent.llm.services.anthropic",
+        "description": "llm_agent.llm.services.anthropic",
+        "peekOfCode": "class AnthropicService(BaseLLMService):\n    \"\"\"Anthropic Claude service with tool-use support.\"\"\"\n    def __init__(\n        self,\n        api_key: str,\n        model: str = \"claude-sonnet-4-20250514\",\n        api_base: Optional[str] = None,\n        default_temperature: float = 0.7,\n        default_max_tokens: int = 4096,\n    ):",
+        "detail": "llm_agent.llm.services.anthropic",
+        "documentation": {}
+    },
+    {
+        "label": "logger",
+        "kind": 5,
+        "importPath": "llm_agent.llm.services.anthropic",
+        "description": "llm_agent.llm.services.anthropic",
+        "peekOfCode": "logger = logging.getLogger(__name__)\ntry:\n    import anthropic\n    ANTHROPIC_AVAILABLE = True\nexcept ImportError:\n    ANTHROPIC_AVAILABLE = False\nclass AnthropicService(BaseLLMService):\n    \"\"\"Anthropic Claude service with tool-use support.\"\"\"\n    def __init__(\n        self,",
+        "detail": "llm_agent.llm.services.anthropic",
+        "documentation": {}
+    },
+    {
+        "label": "OpenAIService",
+        "kind": 6,
+        "importPath": "llm_agent.llm.services.openai",
+        "description": "llm_agent.llm.services.openai",
+        "peekOfCode": "class OpenAIService(BaseLLMService):\n    \"\"\"OpenAI chat-completion service with tool-calling support.\"\"\"\n    def __init__(\n        self,\n        api_key: str,\n        model: str = \"gpt-4o\",\n        api_base: Optional[str] = None,\n        default_temperature: float = 0.7,\n        default_max_tokens: int = 4096,\n        organization: Optional[str] = None,",
+        "detail": "llm_agent.llm.services.openai",
+        "documentation": {}
+    },
+    {
+        "label": "logger",
+        "kind": 5,
+        "importPath": "llm_agent.llm.services.openai",
+        "description": "llm_agent.llm.services.openai",
+        "peekOfCode": "logger = logging.getLogger(__name__)\ntry:\n    from openai import OpenAI\n    OPENAI_AVAILABLE = True\nexcept ImportError:\n    OPENAI_AVAILABLE = False\nclass OpenAIService(BaseLLMService):\n    \"\"\"OpenAI chat-completion service with tool-calling support.\"\"\"\n    def __init__(\n        self,",
+        "detail": "llm_agent.llm.services.openai",
+        "documentation": {}
+    },
+    {
+        "label": "MessageRole",
+        "kind": 6,
+        "importPath": "llm_agent.llm.base",
+        "description": "llm_agent.llm.base",
+        "peekOfCode": "class MessageRole(str, Enum):\n    SYSTEM = \"system\"\n    USER = \"user\"\n    ASSISTANT = \"assistant\"\n    TOOL = \"tool\"\n@dataclass\nclass ToolCall:\n    \"\"\"A tool call requested by the LLM.\"\"\"\n    id: str\n    name: str",
+        "detail": "llm_agent.llm.base",
+        "documentation": {}
+    },
+    {
+        "label": "ToolCall",
+        "kind": 6,
+        "importPath": "llm_agent.llm.base",
+        "description": "llm_agent.llm.base",
+        "peekOfCode": "class ToolCall:\n    \"\"\"A tool call requested by the LLM.\"\"\"\n    id: str\n    name: str\n    arguments: Dict[str, Any]\n    def to_dict(self) -> Dict[str, Any]:\n        return {\"id\": self.id, \"name\": self.name, \"arguments\": self.arguments}\n@dataclass\nclass ToolResult:\n    \"\"\"Result of executing a tool.\"\"\"",
+        "detail": "llm_agent.llm.base",
+        "documentation": {}
+    },
+    {
+        "label": "ToolResult",
+        "kind": 6,
+        "importPath": "llm_agent.llm.base",
+        "description": "llm_agent.llm.base",
+        "peekOfCode": "class ToolResult:\n    \"\"\"Result of executing a tool.\"\"\"\n    tool_call_id: str\n    name: str\n    result: Any\n    error: Optional[str] = None\n    def to_dict(self) -> Dict[str, Any]:\n        return {\n            \"tool_call_id\": self.tool_call_id,\n            \"name\": self.name,",
+        "detail": "llm_agent.llm.base",
+        "documentation": {}
+    },
+    {
+        "label": "Message",
+        "kind": 6,
+        "importPath": "llm_agent.llm.base",
+        "description": "llm_agent.llm.base",
+        "peekOfCode": "class Message:\n    \"\"\"A message in the conversation history.\"\"\"\n    role: MessageRole\n    content: Optional[str] = None\n    tool_calls: Optional[List[ToolCall]] = None\n    tool_call_id: Optional[str] = None\n    name: Optional[str] = None\n    def to_dict(self) -> Dict[str, Any]:\n        d: Dict[str, Any] = {\"role\": self.role.value}\n        if self.content is not None:",
+        "detail": "llm_agent.llm.base",
+        "documentation": {}
+    },
+    {
+        "label": "Tool",
+        "kind": 6,
+        "importPath": "llm_agent.llm.base",
+        "description": "llm_agent.llm.base",
+        "peekOfCode": "class Tool:\n    \"\"\"Definition of a tool the LLM can invoke.\"\"\"\n    name: str\n    description: str\n    parameters: Dict[str, Any]  # JSON Schema\n    handler: Optional[Callable] = None\n    def to_openai_format(self) -> Dict[str, Any]:\n        return {\n            \"type\": \"function\",\n            \"function\": {",
+        "detail": "llm_agent.llm.base",
+        "documentation": {}
+    },
+    {
+        "label": "CompletionResponse",
+        "kind": 6,
+        "importPath": "llm_agent.llm.base",
+        "description": "llm_agent.llm.base",
+        "peekOfCode": "class CompletionResponse:\n    \"\"\"Response from an LLM completion call.\"\"\"\n    content: Optional[str] = None\n    tool_calls: Optional[List[ToolCall]] = None\n    finish_reason: Optional[str] = None\n    usage: Optional[Dict[str, int]] = None\n    model: Optional[str] = None\n    @property\n    def has_tool_calls(self) -> bool:\n        return bool(self.tool_calls)",
+        "detail": "llm_agent.llm.base",
+        "documentation": {}
+    },
+    {
+        "label": "StreamChunk",
+        "kind": 6,
+        "importPath": "llm_agent.llm.base",
+        "description": "llm_agent.llm.base",
+        "peekOfCode": "class StreamChunk:\n    \"\"\"An incremental chunk from a streaming LLM response.\"\"\"\n    content: Optional[str] = None\n    tool_call_chunk: Optional[Dict[str, Any]] = None\n    finish_reason: Optional[str] = None\n    is_final: bool = False\nclass BaseLLMService(ABC):\n    \"\"\"\n    Abstract base for LLM provider implementations.\n    Subclasses must implement ``complete``, ``complete_stream``, and ``is_available``.",
+        "detail": "llm_agent.llm.base",
+        "documentation": {}
+    },
+    {
+        "label": "BaseLLMService",
+        "kind": 6,
+        "importPath": "llm_agent.llm.base",
+        "description": "llm_agent.llm.base",
+        "peekOfCode": "class BaseLLMService(ABC):\n    \"\"\"\n    Abstract base for LLM provider implementations.\n    Subclasses must implement ``complete``, ``complete_stream``, and ``is_available``.\n    \"\"\"\n    def __init__(\n        self,\n        api_key: str,\n        model: str,\n        api_base: Optional[str] = None,",
+        "detail": "llm_agent.llm.base",
+        "documentation": {}
+    },
+    {
+        "label": "logger",
+        "kind": 5,
+        "importPath": "llm_agent.llm.base",
+        "description": "llm_agent.llm.base",
+        "peekOfCode": "logger = logging.getLogger(__name__)\nclass MessageRole(str, Enum):\n    SYSTEM = \"system\"\n    USER = \"user\"\n    ASSISTANT = \"assistant\"\n    TOOL = \"tool\"\n@dataclass\nclass ToolCall:\n    \"\"\"A tool call requested by the LLM.\"\"\"\n    id: str",
+        "detail": "llm_agent.llm.base",
+        "documentation": {}
+    },
+    {
+        "label": "ToolExecutor",
+        "kind": 6,
+        "importPath": "llm_agent.tools.executor",
+        "description": "llm_agent.tools.executor",
+        "peekOfCode": "class ToolExecutor:\n    \"\"\"\n    Executes tool calls safely with timeout protection and error handling.\n    Example::\n        executor = ToolExecutor(registry)\n        result = executor.execute(tool_call)\n    \"\"\"\n    def __init__(\n        self,\n        registry: ToolRegistry,",
+        "detail": "llm_agent.tools.executor",
+        "documentation": {}
+    },
+    {
+        "label": "logger",
+        "kind": 5,
+        "importPath": "llm_agent.tools.executor",
+        "description": "llm_agent.tools.executor",
+        "peekOfCode": "logger = logging.getLogger(__name__)\nclass ToolExecutor:\n    \"\"\"\n    Executes tool calls safely with timeout protection and error handling.\n    Example::\n        executor = ToolExecutor(registry)\n        result = executor.execute(tool_call)\n    \"\"\"\n    def __init__(\n        self,",
+        "detail": "llm_agent.tools.executor",
+        "documentation": {}
+    },
+    {
+        "label": "ToolRegistry",
+        "kind": 6,
+        "importPath": "llm_agent.tools.registry",
+        "description": "llm_agent.tools.registry",
+        "peekOfCode": "class ToolRegistry:\n    \"\"\"\n    Registry for managing tool definitions and handlers.\n    Example::\n        registry = ToolRegistry()\n        registry.register_function(\n            name=\"get_weather\",\n            description=\"Get current weather for a location\",\n            function=get_weather,\n            parameters={",
+        "detail": "llm_agent.tools.registry",
+        "documentation": {}
+    },
+    {
+        "label": "logger",
+        "kind": 5,
+        "importPath": "llm_agent.tools.registry",
+        "description": "llm_agent.tools.registry",
+        "peekOfCode": "logger = logging.getLogger(__name__)\nclass ToolRegistry:\n    \"\"\"\n    Registry for managing tool definitions and handlers.\n    Example::\n        registry = ToolRegistry()\n        registry.register_function(\n            name=\"get_weather\",\n            description=\"Get current weather for a location\",\n            function=get_weather,",
+        "detail": "llm_agent.tools.registry",
+        "documentation": {}
+    },
+    {
+        "label": "LLMAgent",
+        "kind": 6,
+        "importPath": "llm_agent.agent",
+        "description": "llm_agent.agent",
+        "peekOfCode": "class LLMAgent:\n    \"\"\"\n    A basic LLM agent implementing the ReAct loop.\n    Example::\n        from llm_agent import LLMAgent, AgentConfig, LLMConfig\n        agent = LLMAgent(\n            name=\"my-agent\",\n            system_prompt=\"You are a helpful assistant.\",\n            llm_config=LLMConfig(\n                provider_type=\"openai\",",
+        "detail": "llm_agent.agent",
+        "documentation": {}
+    },
+    {
+        "label": "logger",
+        "kind": 5,
+        "importPath": "llm_agent.agent",
+        "description": "llm_agent.agent",
+        "peekOfCode": "logger = logging.getLogger(__name__)\nclass LLMAgent:\n    \"\"\"\n    A basic LLM agent implementing the ReAct loop.\n    Example::\n        from llm_agent import LLMAgent, AgentConfig, LLMConfig\n        agent = LLMAgent(\n            name=\"my-agent\",\n            system_prompt=\"You are a helpful assistant.\",\n            llm_config=LLMConfig(",
+        "detail": "llm_agent.agent",
+        "documentation": {}
+    },
+    {
+        "label": "LLMConfig",
+        "kind": 6,
+        "importPath": "llm_agent.config",
+        "description": "llm_agent.config",
+        "peekOfCode": "class LLMConfig:\n    \"\"\"Configuration for connecting to an LLM provider.\"\"\"\n    provider_type: str  # \"openai\", \"anthropic\"\n    api_key: str\n    model_name: str\n    api_base: Optional[str] = None\n    def __post_init__(self):\n        if not self.provider_type:\n            raise ValueError(\"provider_type is required\")\n        if not self.api_key:",
+        "detail": "llm_agent.config",
+        "documentation": {}
+    },
+    {
+        "label": "AgentConfig",
+        "kind": 6,
+        "importPath": "llm_agent.config",
+        "description": "llm_agent.config",
+        "peekOfCode": "class AgentConfig:\n    \"\"\"Configuration for agent execution behavior.\"\"\"\n    max_iterations: int = 10\n    max_tool_calls_per_iteration: int = 5\n    temperature: float = 0.7\n    max_tokens: int = 4096\n    tool_timeout: float = 30.0\n    parallel_tool_execution: bool = True\n    max_history_messages: int = 50",
+        "detail": "llm_agent.config",
+        "documentation": {}
+    },
+    {
+        "label": "TaskStatus",
+        "kind": 6,
+        "importPath": "llm_agent.models",
+        "description": "llm_agent.models",
+        "peekOfCode": "class TaskStatus(Enum):\n    SUCCEEDED = \"succeeded\"\n    FAILED = \"failed\"\n    PARTIAL = \"partial\"\n@dataclass\nclass TaskEnvelope:\n    \"\"\"Incoming task to be processed by the agent.\"\"\"\n    task_id: str\n    capability: str\n    input: Dict[str, Any]",
+        "detail": "llm_agent.models",
+        "documentation": {}
+    },
+    {
+        "label": "TaskEnvelope",
+        "kind": 6,
+        "importPath": "llm_agent.models",
+        "description": "llm_agent.models",
+        "peekOfCode": "class TaskEnvelope:\n    \"\"\"Incoming task to be processed by the agent.\"\"\"\n    task_id: str\n    capability: str\n    input: Dict[str, Any]\n    parent_task_id: Optional[str] = None\n    workspace_id: Optional[str] = None\n    metadata: Optional[Dict[str, Any]] = None\n    def to_dict(self) -> Dict[str, Any]:\n        return {",
+        "detail": "llm_agent.models",
+        "documentation": {}
+    },
+    {
+        "label": "TaskResult",
+        "kind": 6,
+        "importPath": "llm_agent.models",
+        "description": "llm_agent.models",
+        "peekOfCode": "class TaskResult:\n    \"\"\"Result returned after processing a task.\"\"\"\n    task_id: str\n    status: TaskStatus\n    output: Dict[str, Any]\n    error: Optional[str] = None\n    metrics: Optional[Dict[str, Any]] = None\n    def to_dict(self) -> Dict[str, Any]:\n        return {\n            \"task_id\": self.task_id,",
+        "detail": "llm_agent.models",
+        "documentation": {}
+    },
+    {
+        "label": "AgentResponse",
+        "kind": 6,
+        "importPath": "llm_agent.models",
+        "description": "llm_agent.models",
+        "peekOfCode": "class AgentResponse:\n    \"\"\"Detailed response from agent execution.\"\"\"\n    content: str\n    tool_calls_made: List[Dict[str, Any]] = field(default_factory=list)\n    iterations: int = 0\n    tokens_used: Optional[Dict[str, int]] = None\n    error: Optional[str] = None\n    @property\n    def success(self) -> bool:\n        return self.error is None",
+        "detail": "llm_agent.models",
+        "documentation": {}
+    },
+    {
+        "label": "FIXED_AUTBOOKS_URL",
+        "kind": 5,
+        "importPath": "api",
+        "description": "api",
+        "peekOfCode": "FIXED_AUTBOOKS_URL = os.getenv(\n    \"FIXED_AUTBOOKS_URL\",\n    \"http://84.247.180.192:8001/books/book-original-002?seed=36\",\n)\napp = FastAPI(title=\"Autoppia Web Agent API\")\n@app.get(\"/health\", summary=\"Health check\")\nasync def health() -> Dict[str, str]:\n    return {\"status\": \"healthy\"}\n@app.post(\"/act\", summary=\"Decide next agent actions\")\nasync def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:",
+        "detail": "api",
+        "documentation": {}
+    },
+    {
+        "label": "app",
+        "kind": 5,
+        "importPath": "api",
+        "description": "api",
+        "peekOfCode": "app = FastAPI(title=\"Autoppia Web Agent API\")\n@app.get(\"/health\", summary=\"Health check\")\nasync def health() -> Dict[str, str]:\n    return {\"status\": \"healthy\"}\n@app.post(\"/act\", summary=\"Decide next agent actions\")\nasync def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:\n    \"\"\"\n    Minimal CUA endpoint.\n    Ignores the incoming observation/state and always returns a single\n    navigate action to the known Autobooks BOOK_DETAIL page.",
+        "detail": "api",
+        "documentation": {}
+    },
+    {
+        "label": "main",
+        "kind": 2,
+        "importPath": "check",
+        "description": "check",
+        "peekOfCode": "def main() -> None:\n    main_py = REPO_ROOT / \"main.py\"\n    api_py = REPO_ROOT / \"api.py\"\n    _ok(f\"Found {api_py.name}\")\n    main_mod = _load_module(main_py, \"main\")\n    app = getattr(main_mod, \"app\", None)\n    if app is None:\n        _fail(\"main.py does not expose `app`\")\n    _ok(\"main.py exposes `app`\")\n    if not _find_route(app, \"/health\", \"GET\"):",
+        "detail": "check",
+        "documentation": {}
+    },
+    {
+        "label": "REPO_ROOT",
+        "kind": 5,
+        "importPath": "check",
+        "description": "check",
+        "peekOfCode": "REPO_ROOT = Path(__file__).resolve().parent\ndef _fail(msg: str) -> None:\n    print(f\"[FAIL] {msg}\")\n    sys.exit(1)\ndef _ok(msg: str) -> None:\n    print(f\"[OK] {msg}\")\ndef _load_module(path: Path, name: str):\n    if not path.exists():\n        _fail(f\"Missing {path.name}\")\n    spec = importlib.util.spec_from_file_location(name, path)",
+        "detail": "check",
+        "documentation": {}
+    },
+    {
+        "label": "load_tasks",
+        "kind": 2,
+        "importPath": "eval",
+        "description": "eval",
+        "peekOfCode": "def load_tasks(\n    cache_path: Path = TASK_CACHE,\n    use_case: str | None = None,\n    limit: int = 20,\n) -> list[Task]:\n    \"\"\"Load tasks from the JSON cache, optionally filtered by use case.\"\"\"\n    with open(cache_path) as f:\n        data = json.load(f)\n    raw_tasks = data[\"tasks\"] if isinstance(data, dict) and \"tasks\" in data else data\n    tasks: list[Task] = []",
+        "detail": "eval",
+        "documentation": {}
+    },
+    {
+        "label": "inject_seed",
+        "kind": 2,
+        "importPath": "eval",
+        "description": "eval",
+        "peekOfCode": "def inject_seed(task: Task) -> tuple[Task, int]:\n    \"\"\"Inject a random seed into the task URL for variation.\"\"\"\n    t = deepcopy(task)\n    seed = random.randint(1, 100_000)\n    base_url = t.url.split(\"?\")[0] if \"?\" in t.url else t.url\n    t.url = f\"{base_url}?seed={seed}\"\n    return t, seed\n# ── Main evaluation loop ────────────────────────────────────────\nasync def run_evaluation(\n    model: str = \"gpt-4o-mini\",",
+        "detail": "eval",
+        "documentation": {}
+    },
+    {
+        "label": "main",
+        "kind": 2,
+        "importPath": "eval",
+        "description": "eval",
+        "peekOfCode": "def main():\n    import argparse\n    parser = argparse.ArgumentParser(description=\"Autoppia Operator - LLM Agent Evaluation\")\n    parser.add_argument(\"--model\", default=\"gpt-4o-mini\", help=\"OpenAI model name\")\n    parser.add_argument(\"--num-tasks\", type=int, default=20, help=\"Number of tasks to evaluate\")\n    parser.add_argument(\"--max-steps\", type=int, default=15, help=\"Max steps per episode\")\n    parser.add_argument(\"--use-case\", default=None, help=\"Filter by use case (e.g. SEARCH_FILM)\")\n    parser.add_argument(\"--temperature\", type=float, default=0.2, help=\"LLM temperature\")\n    args = parser.parse_args()\n    asyncio.run(",
+        "detail": "eval",
+        "documentation": {}
+    },
+    {
+        "label": "SCRIPT_DIR",
+        "kind": 5,
+        "importPath": "eval",
+        "description": "eval",
+        "peekOfCode": "SCRIPT_DIR = Path(__file__).resolve().parent\nOPERATOR_ROOT = SCRIPT_DIR.parent\nsys.path.insert(0, str(OPERATOR_ROOT))\nsys.path.insert(0, str(SCRIPT_DIR))\n# ── Load .env from autoppia_rl ──────────────────────────────────\nfrom dotenv import load_dotenv\nrl_env = OPERATOR_ROOT / \"autoppia_rl\" / \".env\"\nif rl_env.exists():\n    load_dotenv(rl_env, override=True)\n# ── Imports ──────────────────────────────────────────────────────",
+        "detail": "eval",
+        "documentation": {}
+    },
+    {
+        "label": "OPERATOR_ROOT",
+        "kind": 5,
+        "importPath": "eval",
+        "description": "eval",
+        "peekOfCode": "OPERATOR_ROOT = SCRIPT_DIR.parent\nsys.path.insert(0, str(OPERATOR_ROOT))\nsys.path.insert(0, str(SCRIPT_DIR))\n# ── Load .env from autoppia_rl ──────────────────────────────────\nfrom dotenv import load_dotenv\nrl_env = OPERATOR_ROOT / \"autoppia_rl\" / \".env\"\nif rl_env.exists():\n    load_dotenv(rl_env, override=True)\n# ── Imports ──────────────────────────────────────────────────────\nfrom loguru import logger",
+        "detail": "eval",
+        "documentation": {}
+    },
+    {
+        "label": "rl_env",
+        "kind": 5,
+        "importPath": "eval",
+        "description": "eval",
+        "peekOfCode": "rl_env = OPERATOR_ROOT / \"autoppia_rl\" / \".env\"\nif rl_env.exists():\n    load_dotenv(rl_env, override=True)\n# ── Imports ──────────────────────────────────────────────────────\nfrom loguru import logger\nfrom autoppia_iwa.src.data_generation.tasks.classes import Task\nfrom autoppia_iwa.src.evaluation.stateful_evaluator import AsyncStatefulEvaluator\nfrom autoppia_rl.src.operator.agent import LLMWebAgent\nfrom autoppia_rl.src.operator.runner import EpisodeRunner\n# Default task cache path",
+        "detail": "eval",
+        "documentation": {}
+    },
+    {
+        "label": "TASK_CACHE",
+        "kind": 5,
+        "importPath": "eval",
+        "description": "eval",
+        "peekOfCode": "TASK_CACHE = OPERATOR_ROOT / \"autoppia_rl\" / \"data\" / \"task_cache\" / \"autoppia_cinema_tasks.json\"\nrandom.seed(time.time())\n# ── Task loading ─────────────────────────────────────────────────\ndef load_tasks(\n    cache_path: Path = TASK_CACHE,\n    use_case: str | None = None,\n    limit: int = 20,\n) -> list[Task]:\n    \"\"\"Load tasks from the JSON cache, optionally filtered by use case.\"\"\"\n    with open(cache_path) as f:",
+        "detail": "eval",
+        "documentation": {}
+    },
+    {
+        "label": "__all__",
+        "kind": 5,
+        "importPath": "main",
+        "description": "main",
+        "peekOfCode": "__all__ = [\"app\"]",
+        "detail": "main",
+        "documentation": {}
+    }
+]
