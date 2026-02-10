@@ -91,6 +91,67 @@ def _extract_candidates(html: str, max_candidates: int = 30) -> List[_Candidate]
     return parser.candidates[:max_candidates]
 
 
+def _summarize_html(html: str, limit: int = 1200) -> str:
+    if not html:
+        return ""
+    try:
+        text = re.sub(r"<[^>]+>", " ", html)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:limit]
+    except Exception:
+        return ""
+
+
+def _extract_relevant_values(relevant_data: Dict[str, Any]) -> Dict[str, str]:
+    """Extract sensitive values for placeholder substitution."""
+    creds: Dict[str, str] = {}
+    if not isinstance(relevant_data, dict):
+        return creds
+    # Common locations
+    user_for_login = relevant_data.get("user_for_login", {})
+    if isinstance(user_for_login, dict):
+        if isinstance(user_for_login.get("username"), str):
+            creds["<username>"] = user_for_login["username"]
+        if isinstance(user_for_login.get("password"), str):
+            creds["<password>"] = user_for_login["password"]
+        if isinstance(user_for_login.get("email"), str):
+            creds["<email>"] = user_for_login["email"]
+    user_for_register = relevant_data.get("user_for_register", {})
+    if isinstance(user_for_register, dict):
+        if isinstance(user_for_register.get("username"), str):
+            creds["<username>"] = user_for_register["username"]
+        if isinstance(user_for_register.get("password"), str):
+            creds["<password>"] = user_for_register["password"]
+        if isinstance(user_for_register.get("email"), str):
+            creds["<email>"] = user_for_register["email"]
+    # Flatten any other string values
+    for k, v in relevant_data.items():
+        if isinstance(v, str) and k.lower() in {"username", "password", "email"}:
+            creds[f"<{k.lower()}>"] = v
+    return creds
+
+
+def _sanitize_text(text: str, replacements: Dict[str, str]) -> str:
+    """Replace sensitive values with placeholders before sending to LLM."""
+    if not text:
+        return text
+    sanitized = text
+    for placeholder, actual in replacements.items():
+        if actual:
+            sanitized = sanitized.replace(actual, placeholder)
+    return sanitized
+
+
+def _apply_placeholders(text: str, replacements: Dict[str, str]) -> str:
+    """Replace placeholders with actual values before returning actions."""
+    if not text:
+        return text
+    applied = text
+    for placeholder, actual in replacements.items():
+        if actual:
+            applied = applied.replace(placeholder, actual)
+    return applied
+
 class LLMGateway:
     """Minimal gateway-style client that adds IWA-Task-Id for subnet tracking."""
 
@@ -136,7 +197,15 @@ def _call_openai(task_id: str, messages: List[Dict[str, Any]], model: str) -> Di
     return _llm_gateway.predict(task_id=task_id, messages=messages, model=model)
 
 
-def _llm_decide(task_id: str, task: str, url: str, candidates: List[_Candidate]) -> Dict[str, Any]:
+def _llm_decide(
+    task_id: str,
+    task: str,
+    url: str,
+    candidates: List[_Candidate],
+    page_summary: str,
+    history: List[Dict[str, Any]] | None,
+    placeholders: Dict[str, str],
+) -> Dict[str, Any]:
     items = []
     for i, c in enumerate(candidates):
         label = (c.text or "").strip()
@@ -149,9 +218,24 @@ def _llm_decide(task_id: str, task: str, url: str, candidates: List[_Candidate])
         "Return JSON: {\"action\":\"click|type|select|scroll_down|scroll_up|wait|done\", "
         "\"candidate_id\":int|null, \"text\":string|null}."
     )
+    history_lines: List[str] = []
+    for h in (history or [])[-6:]:
+        step = h.get("step", "?")
+        action = h.get("action", "")
+        cid = h.get("candidate_id")
+        text = h.get("text", "")
+        ok = h.get("exec_ok", True)
+        history_lines.append(
+            f"{step}. {action} cid={cid} text={text} [{'OK' if ok else 'FAILED'}]"
+        )
+
     user_msg = (
-        f"TASK: {task}\nURL: {url}\n\nCANDIDATES:\n" + "\n".join(items[:30]) +
+        f"TASK: {task}\nURL: {url}\n\n"
+        f"PAGE SUMMARY:\n{page_summary}\n\n"
+        f"CANDIDATES:\n" + "\n".join(items[:30]) +
+        ("\n\nHISTORY:\n" + "\n".join(history_lines) if history_lines else "") +
         "\n\nRules: candidate_id required for click/type/select. text required for type/select."
+        "\nIf credentials are needed, use placeholders like <username>, <password>, <email>."
     )
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     resp = _call_openai(
@@ -179,13 +263,18 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     task = payload.get("prompt") or payload.get("task_prompt") or ""
     url = payload.get("url") or ""
     html = payload.get("snapshot_html") or ""
+    history = payload.get("history") if isinstance(payload.get("history"), list) else None
+    relevant_data = payload.get("relevant_data") if isinstance(payload.get("relevant_data"), dict) else {}
 
     candidates = _extract_candidates(html)
+    replacements = _extract_relevant_values(relevant_data)
+    page_summary = _sanitize_text(_summarize_html(html), replacements)
+    task = _sanitize_text(task, replacements)
 
     try:
         if not os.getenv("OPENAI_API_KEY"):
             raise RuntimeError("OPENAI_API_KEY not set")
-        decision = _llm_decide(task_id, task, url, candidates)
+        decision = _llm_decide(task_id, task, url, candidates, page_summary, history, replacements)
     except Exception:
         return {
             "actions": [
@@ -199,6 +288,8 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     action = (decision.get("action") or "").lower()
     cid = decision.get("candidate_id")
     text = decision.get("text")
+    if isinstance(text, str):
+        text = _apply_placeholders(text, replacements)
 
     if action in {"scroll_down", "scroll_up"}:
         return {"actions": [{"type": "ScrollAction", "down": action == "scroll_down", "up": action == "scroll_up"}]}

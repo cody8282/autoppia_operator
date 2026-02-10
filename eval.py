@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
 """
-Simple evaluation script for the LLM web agent.
+Simple evaluation script for the autoppia_operator /act endpoint.
 
-Loads 20 tasks from the autoppia_rl task cache, runs each through the
-LLMWebAgent.act() loop with the IWA StatefulEvaluator, and prints results.
-
-Usage:
-    python eval.py
-    python eval.py --num-tasks 5 --max-steps 10
-    python eval.py --model gpt-4o-mini --use-case SEARCH_FILM
+Uses AsyncStatefulEvaluator from autoppia_iwa and calls the local agent
+HTTP API directly (no autoppia_rl dependencies).
 """
 
 import asyncio
 import json
 import os
 import random
+import subprocess
 import sys
 import time
 from copy import deepcopy
@@ -26,20 +22,19 @@ OPERATOR_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(OPERATOR_ROOT))
 sys.path.insert(0, str(SCRIPT_DIR))
 
-# ── Load .env from autoppia_rl ──────────────────────────────────
+# ── Load .env from autoppia_operator ────────────────────────────
 from dotenv import load_dotenv
 
-rl_env = OPERATOR_ROOT / "autoppia_rl" / ".env"
-if rl_env.exists():
-    load_dotenv(rl_env, override=True)
+operator_env = SCRIPT_DIR / ".env"
+if operator_env.exists():
+    load_dotenv(operator_env, override=True)
 
 # ── Imports ──────────────────────────────────────────────────────
 from loguru import logger
 
 from autoppia_iwa.src.data_generation.tasks.classes import Task
 from autoppia_iwa.src.evaluation.stateful_evaluator import AsyncStatefulEvaluator
-from autoppia_rl.src.operator.agent import LLMWebAgent
-from autoppia_rl.src.operator.runner import EpisodeRunner
+from autoppia_iwa.src.execution.actions.base import BaseAction
 
 # Default task cache path
 TASK_CACHE = OPERATOR_ROOT / "autoppia_rl" / "data" / "task_cache" / "autoppia_cinema_tasks.json"
@@ -105,7 +100,7 @@ async def run_evaluation(
         sys.exit(1)
 
     logger.info("=" * 60)
-    logger.info(f"  Autoppia Operator – LLM Agent Evaluation")
+    logger.info("  Autoppia Operator – LLM Agent Evaluation")
     logger.info(f"  Model:      {model}")
     logger.info(f"  Tasks:      {num_tasks}")
     logger.info(f"  Max steps:  {max_steps}")
@@ -120,14 +115,53 @@ async def run_evaluation(
         logger.error("No tasks found. Check task cache path and use_case filter.")
         return
 
-    # Create agent and runner
-    agent = LLMWebAgent(
-        model=model,
-        temperature=temperature,
-        api_key=api_key,
-        max_candidates=30,
-    )
-    runner = EpisodeRunner(agent=agent, max_steps=max_steps)
+    # Agent endpoint config
+    agent_base_url = os.getenv("AGENT_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+    start_server = os.getenv("START_AGENT_SERVER", "1") in {"1", "true", "yes"}
+
+    server_proc: subprocess.Popen | None = None
+    if start_server:
+        server_proc = subprocess.Popen(
+            [sys.executable, "-m", "uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"],
+            cwd=str(SCRIPT_DIR),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        # Give the server a moment to start
+        time.sleep(1.5)
+
+    async def call_agent_act(prepared_task: Task, snapshot_html: str, url: str, step_index: int, history: list[dict]) -> list[BaseAction]:
+        import aiohttp
+
+        payload = {
+            "task_id": prepared_task.id,
+            "prompt": prepared_task.prompt,
+            "url": url,
+            "snapshot_html": snapshot_html,
+            "step_index": int(step_index),
+            "web_project_id": prepared_task.web_project_id,
+            "relevant_data": prepared_task.relevant_data,
+            "history": history,
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{agent_base_url}/act", json=payload) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+
+        actions_payload = data.get("actions") if isinstance(data, dict) else None
+        if not isinstance(actions_payload, list):
+            return []
+        actions: list[BaseAction] = []
+        for raw in actions_payload:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                act = BaseAction.create_action(raw)
+                if act is not None:
+                    actions.append(act)
+            except Exception:
+                continue
+        return actions
 
     # Results tracking
     results = {
@@ -164,30 +198,70 @@ async def run_evaluation(
 
         task_start = time.time()
         try:
-            episode = await runner.run_episode(task)
+            prepared_task = task.prepare_for_agent(web_agent_id="1")
+            evaluator = AsyncStatefulEvaluator(task=prepared_task, web_agent_id="1")
+            step_result = await evaluator.reset()
+
+            history: list[dict] = []
+            final_score = 0.0
+            final_success = False
+            total_steps = 0
+
+            for step_idx in range(max_steps):
+                actions = await call_agent_act(
+                    prepared_task,
+                    snapshot_html=step_result.snapshot.html,
+                    url=step_result.snapshot.url,
+                    step_index=step_idx,
+                    history=history,
+                )
+                if actions:
+                    action = actions[0]
+                    step_result = await evaluator.step(action)
+                else:
+                    action = None
+                    step_result = await evaluator.step(None)
+
+                final_score = step_result.score.raw_score
+                final_success = step_result.score.success
+                total_steps = step_idx + 1
+
+                history.append({
+                    "step": step_idx,
+                    "action": action.type if action else "done",
+                    "candidate_id": None,
+                    "text": getattr(action, "text", None) if action else None,
+                    "exec_ok": True,
+                })
+
+                if final_success:
+                    break
+
+            await evaluator.close()
+
             task_elapsed = time.time() - task_start
 
             results["num_tasks"] += 1
-            steps_count = episode.total_steps or 0
+            steps_count = total_steps or 0
             avg_step_seconds = (task_elapsed / steps_count) if steps_count > 0 else 0.0
             ep_data = {
                 "task_id": str(task.id),
                 "use_case": uc_name,
                 "seed": seed,
-                "success": episode.final_success,
-                "score": episode.final_score,
-                "steps": episode.total_steps,
+                "success": bool(final_success),
+                "score": float(final_score),
+                "steps": steps_count,
                 "task_seconds": round(task_elapsed, 4),
                 "avg_step_seconds": round(avg_step_seconds, 4),
             }
             results["episodes"].append(ep_data)
 
-            if episode.final_success:
+            if final_success:
                 results["successes"] += 1
-                logger.info(f"  -> SUCCESS (score={episode.final_score:.2f}, steps={episode.total_steps})")
+                logger.info(f"  -> SUCCESS (score={final_score:.2f}, steps={steps_count})")
             else:
                 results["failures"] += 1
-                logger.info(f"  -> FAILED  (score={episode.final_score:.2f}, steps={episode.total_steps})")
+                logger.info(f"  -> FAILED  (score={final_score:.2f}, steps={steps_count})")
 
         except Exception as e:
             task_elapsed = time.time() - task_start
@@ -270,6 +344,10 @@ async def run_evaluation(
     with open(out_path, "w") as f:
         json.dump(results, f, indent=2)
     print(f"  Results saved to: {out_path}\n")
+
+    if server_proc:
+        server_proc.terminate()
+        server_proc.wait(timeout=5)
 
     return results
 

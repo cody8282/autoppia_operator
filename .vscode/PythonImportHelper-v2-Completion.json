@@ -194,6 +194,15 @@
         "documentation": {}
     },
     {
+        "label": "subprocess",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "subprocess",
+        "description": "subprocess",
+        "detail": "subprocess",
+        "documentation": {}
+    },
+    {
         "label": "time",
         "kind": 6,
         "isExtraImport": true,
@@ -243,19 +252,11 @@
         "documentation": {}
     },
     {
-        "label": "LLMWebAgent",
-        "importPath": "autoppia_rl.src.operator.agent",
-        "description": "autoppia_rl.src.operator.agent",
+        "label": "BaseAction",
+        "importPath": "autoppia_iwa.src.execution.actions.base",
+        "description": "autoppia_iwa.src.execution.actions.base",
         "isExtraImport": true,
-        "detail": "autoppia_rl.src.operator.agent",
-        "documentation": {}
-    },
-    {
-        "label": "EpisodeRunner",
-        "importPath": "autoppia_rl.src.operator.runner",
-        "description": "autoppia_rl.src.operator.runner",
-        "isExtraImport": true,
-        "detail": "autoppia_rl.src.operator.runner",
+        "detail": "autoppia_iwa.src.execution.actions.base",
         "documentation": {}
     },
     {
@@ -316,7 +317,7 @@
         "kind": 5,
         "importPath": "api",
         "description": "api",
-        "peekOfCode": "_llm_gateway = LLMGateway()\ndef _call_openai(task_id: str, messages: List[Dict[str, Any]], model: str) -> Dict[str, Any]:\n    api_key = os.getenv(\"OPENAI_API_KEY\")\n    if not api_key:\n        raise RuntimeError(\"OPENAI_API_KEY not set\")\n    return _llm_gateway.predict(task_id=task_id, messages=messages, model=model)\ndef _llm_decide(task_id: str, task: str, url: str, candidates: List[_Candidate]) -> Dict[str, Any]:\n    items = []\n    for i, c in enumerate(candidates):\n        label = (c.text or \"\").strip()",
+        "peekOfCode": "_llm_gateway = LLMGateway()\ndef _call_openai(task_id: str, messages: List[Dict[str, Any]], model: str) -> Dict[str, Any]:\n    api_key = os.getenv(\"OPENAI_API_KEY\")\n    if not api_key:\n        raise RuntimeError(\"OPENAI_API_KEY not set\")\n    return _llm_gateway.predict(task_id=task_id, messages=messages, model=model)\ndef _llm_decide(\n    task_id: str,\n    task: str,\n    url: str,",
         "detail": "api",
         "documentation": {}
     },
@@ -370,7 +371,7 @@
         "kind": 5,
         "importPath": "eval",
         "description": "eval",
-        "peekOfCode": "SCRIPT_DIR = Path(__file__).resolve().parent\nOPERATOR_ROOT = SCRIPT_DIR.parent\nsys.path.insert(0, str(OPERATOR_ROOT))\nsys.path.insert(0, str(SCRIPT_DIR))\n# ── Load .env from autoppia_rl ──────────────────────────────────\nfrom dotenv import load_dotenv\nrl_env = OPERATOR_ROOT / \"autoppia_rl\" / \".env\"\nif rl_env.exists():\n    load_dotenv(rl_env, override=True)\n# ── Imports ──────────────────────────────────────────────────────",
+        "peekOfCode": "SCRIPT_DIR = Path(__file__).resolve().parent\nOPERATOR_ROOT = SCRIPT_DIR.parent\nsys.path.insert(0, str(OPERATOR_ROOT))\nsys.path.insert(0, str(SCRIPT_DIR))\n# ── Load .env from autoppia_operator ────────────────────────────\nfrom dotenv import load_dotenv\noperator_env = SCRIPT_DIR / \".env\"\nif operator_env.exists():\n    load_dotenv(operator_env, override=True)\n# ── Imports ──────────────────────────────────────────────────────",
         "detail": "eval",
         "documentation": {}
     },
@@ -379,16 +380,16 @@
         "kind": 5,
         "importPath": "eval",
         "description": "eval",
-        "peekOfCode": "OPERATOR_ROOT = SCRIPT_DIR.parent\nsys.path.insert(0, str(OPERATOR_ROOT))\nsys.path.insert(0, str(SCRIPT_DIR))\n# ── Load .env from autoppia_rl ──────────────────────────────────\nfrom dotenv import load_dotenv\nrl_env = OPERATOR_ROOT / \"autoppia_rl\" / \".env\"\nif rl_env.exists():\n    load_dotenv(rl_env, override=True)\n# ── Imports ──────────────────────────────────────────────────────\nfrom loguru import logger",
+        "peekOfCode": "OPERATOR_ROOT = SCRIPT_DIR.parent\nsys.path.insert(0, str(OPERATOR_ROOT))\nsys.path.insert(0, str(SCRIPT_DIR))\n# ── Load .env from autoppia_operator ────────────────────────────\nfrom dotenv import load_dotenv\noperator_env = SCRIPT_DIR / \".env\"\nif operator_env.exists():\n    load_dotenv(operator_env, override=True)\n# ── Imports ──────────────────────────────────────────────────────\nfrom loguru import logger",
         "detail": "eval",
         "documentation": {}
     },
     {
-        "label": "rl_env",
+        "label": "operator_env",
         "kind": 5,
         "importPath": "eval",
         "description": "eval",
-        "peekOfCode": "rl_env = OPERATOR_ROOT / \"autoppia_rl\" / \".env\"\nif rl_env.exists():\n    load_dotenv(rl_env, override=True)\n# ── Imports ──────────────────────────────────────────────────────\nfrom loguru import logger\nfrom autoppia_iwa.src.data_generation.tasks.classes import Task\nfrom autoppia_iwa.src.evaluation.stateful_evaluator import AsyncStatefulEvaluator\nfrom autoppia_rl.src.operator.agent import LLMWebAgent\nfrom autoppia_rl.src.operator.runner import EpisodeRunner\n# Default task cache path",
+        "peekOfCode": "operator_env = SCRIPT_DIR / \".env\"\nif operator_env.exists():\n    load_dotenv(operator_env, override=True)\n# ── Imports ──────────────────────────────────────────────────────\nfrom loguru import logger\nfrom autoppia_iwa.src.data_generation.tasks.classes import Task\nfrom autoppia_iwa.src.evaluation.stateful_evaluator import AsyncStatefulEvaluator\nfrom autoppia_iwa.src.execution.actions.base import BaseAction\n# Default task cache path\nTASK_CACHE = OPERATOR_ROOT / \"autoppia_rl\" / \"data\" / \"task_cache\" / \"autoppia_cinema_tasks.json\"",
         "detail": "eval",
         "documentation": {}
     },
