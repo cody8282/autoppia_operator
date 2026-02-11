@@ -3,10 +3,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import os
 import json
 import re
-import urllib.request
-import urllib.error
 from html.parser import HTMLParser
 
+import httpx
 from fastapi import Body, FastAPI, HTTPException
 
 
@@ -169,22 +168,22 @@ class LLMGateway:
             "max_tokens": 300,
             "response_format": {"type": "json_object"},
         }
-        data = json.dumps(body).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self.base_url}/chat/completions",
-            data=data,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-                "IWA-Task-ID": task_id,
-            },
-        )
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "IWA-Task-ID": task_id,
+        }
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                raw = resp.read().decode("utf-8")
-        except urllib.error.HTTPError as e:
-            raise RuntimeError(f"OpenAI error: {e.read().decode('utf-8')}")
-        return json.loads(raw)
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.post(
+                    f"{self.base_url}/chat/completions",
+                    json=body,
+                    headers=headers,
+                )
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"OpenAI error: {e.response.text}")
 
 
 _llm_gateway = LLMGateway()
