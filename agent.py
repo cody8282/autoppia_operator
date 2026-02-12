@@ -445,191 +445,6 @@ def _dom_digest(html: str, limit: int = 1400) -> str:
 
 
 # -----------------------------
-# Credential redaction
-# -----------------------------
-
-def _extract_creds_from_task_text(task: str) -> Dict[str, str]:
-    """Best-effort parse credentials embedded in the task text.
-
-    The benchmark sometimes encodes credentials in the prompt itself (e.g. username '1').
-    However, task text can also include derived/partial values. We treat relevant_data
-    as the primary source of truth, and use task-text creds only to fill gaps.
-    """
-    out: Dict[str, str] = {}
-    t = str(task or "")
-
-    m = re.search(r"username\s*'([^']+)'", t, flags=re.I)
-    if m:
-        u = (m.group(1) or '').strip()
-        if u and u.lower() not in {'<web_agent_id>', '<username>'}:
-            out['<username>'] = u
-
-    m = re.search(r"password\s*'([^']+)'", t, flags=re.I)
-    if m:
-        pw = (m.group(1) or '').strip()
-        if pw and pw.lower() not in {'<password>'}:
-            out['<password>'] = pw
-
-    m = re.search(r"email\s*'([^']+)'", t, flags=re.I)
-    if m:
-        em = (m.group(1) or '').strip()
-        if em and em.lower() not in {'<email>'}:
-            out['<email>'] = em
-
-    return out
-
-
-def _extract_relevant_values(relevant_data: Dict[str, Any]) -> Dict[str, str]:
-    creds: Dict[str, str] = {}
-    if not isinstance(relevant_data, dict):
-        return creds
-
-    user_for_login = relevant_data.get("user_for_login", {})
-    if isinstance(user_for_login, dict):
-        if isinstance(user_for_login.get("username"), str):
-            creds["<username>"] = user_for_login["username"]
-        if isinstance(user_for_login.get("password"), str):
-            creds["<password>"] = user_for_login["password"]
-        if isinstance(user_for_login.get("email"), str):
-            creds["<email>"] = user_for_login["email"]
-
-    user_for_register = relevant_data.get("user_for_register", {})
-    if isinstance(user_for_register, dict):
-        if isinstance(user_for_register.get("username"), str):
-            creds["<username>"] = user_for_register["username"]
-        if isinstance(user_for_register.get("password"), str):
-            creds["<password>"] = user_for_register["password"]
-        if isinstance(user_for_register.get("email"), str):
-            creds["<email>"] = user_for_register["email"]
-
-    for k, v in relevant_data.items():
-        if isinstance(v, str) and k.lower() in {"username", "password", "email"}:
-            creds[f"<{k.lower()}>"] = v
-
-    return creds
-
-
-def _looks_like_placeholder(value: str) -> bool:
-    v = (value or "").strip()
-    if not v:
-        return True
-    if v.startswith("<") and v.endswith(">"):
-        return True
-    if "<web_agent_id>" in v:
-        return True
-    return False
-
-
-def _merge_replacements(
-    *,
-    base: dict[str, str],
-    override_if_missing_or_placeholder: dict[str, str],
-) -> dict[str, str]:
-    """Merge two placeholder->actual maps.
-
-    `base` is treated as source-of-truth when it already contains a concrete
-    value (e.g. relevant_data username=user1). We only pull from the override
-    map when base is missing or still placeholder-like.
-    """
-    out = dict(base or {})
-    for k, v in (override_if_missing_or_placeholder or {}).items():
-        if not v:
-            continue
-        cur = out.get(k)
-        if cur is None or _looks_like_placeholder(str(cur)):
-            out[k] = v
-    return out
-
-
-def _extract_input_value_by_id(html: str, element_id: str) -> str:
-    try:
-        pat = rf'id="{re.escape(str(element_id))}"[^>]*value="([^"]*)"'
-        m = re.search(pat, html or '', flags=re.I)
-        return (m.group(1) if m else '') or ''
-    except Exception:
-        return ''
-
-
-def _with_path_and_seed(current_url: str, path: str) -> str:
-    try:
-        parts = urlsplit(str(current_url or ''))
-        q = parse_qs(parts.query or '')
-        seed = (q.get('seed') or [None])[0]
-        query = urlencode({'seed': seed}) if seed else ''
-        return urlunsplit((parts.scheme, parts.netloc, str(path or ''), query, ''))
-    except Exception:
-        return str(current_url or '')
-
-
-def _find_candidate_by_attr(candidates: list['_Candidate'], attr: str, value: str) -> int | None:
-    a = (attr or '').lower()
-    v = (value or '').lower()
-    for i, c in enumerate(candidates or []):
-        sel = c.selector if isinstance(c.selector, dict) else {}
-        if str(sel.get('type') or '').lower() != 'attributevalueselector':
-            continue
-        if str(sel.get('attribute') or '').lower() == a and str(sel.get('value') or '').lower() == v:
-            return i
-    return None
-
-
-def _credential_placeholder_for_candidate(c: '_Candidate') -> str | None:
-    try:
-        if not c or (c.tag or '').lower() != 'input':
-            return None
-        sel = c.selector if isinstance(c.selector, dict) else {}
-        attr = str(sel.get('attribute') or '').lower()
-        val = str(sel.get('value') or '').lower()
-        hay = ' '.join([attr, val, str(c.text or ''), str(c.context or '')]).lower()
-        if 'password' in hay or 'pass' in hay:
-            return '<password>'
-        if 'email' in hay:
-            return '<email>'
-        if 'user' in hay or 'username' in hay or 'login' in hay:
-            return '<username>'
-        return None
-    except Exception:
-        return None
-
-
-def _canonicalize_task_with_placeholders(task_text: str, replacements: dict[str, str]) -> str:
-    """Rewrite any embedded creds in task text to use placeholders.
-
-    Some generators embed derived values like username '1' while relevant_data
-    contains the real username (e.g. user1). This keeps the LLM conditioned on
-    placeholders instead of brittle literals.
-    """
-    t = str(task_text or '')
-    if '<username>' in replacements:
-        t = re.sub(r"(username\s*')([^']*)(')", r"\1<username>\3", t, flags=re.I)
-    if '<password>' in replacements:
-        t = re.sub(r"(password\s*')([^']*)(')", r"\1<password>\3", t, flags=re.I)
-    if '<email>' in replacements:
-        t = re.sub(r"(email\s*')([^']*)(')", r"\1<email>\3", t, flags=re.I)
-    return t
-
-
-def _sanitize_text(text: str, replacements: Dict[str, str]) -> str:
-    if not text:
-        return text
-    sanitized = text
-    for placeholder, actual in replacements.items():
-        if actual:
-            sanitized = sanitized.replace(actual, placeholder)
-    return sanitized
-
-
-def _apply_placeholders(text: str, replacements: Dict[str, str]) -> str:
-    if not text:
-        return text
-    applied = text
-    for placeholder, actual in replacements.items():
-        if actual:
-            applied = applied.replace(placeholder, actual)
-    return applied
-
-
-# -----------------------------
 # Ranking and prompting
 # -----------------------------
 
@@ -1145,136 +960,17 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     html = payload.get("snapshot_html") or ""
     history = payload.get("history") if isinstance(payload.get("history"), list) else None
     relevant_data = payload.get("relevant_data") if isinstance(payload.get("relevant_data"), dict) else {}
-
-    replacements = _merge_replacements(
-        base=_extract_relevant_values(relevant_data),
-        override_if_missing_or_placeholder=_extract_creds_from_task_text(str(task or "")),
-    )
-
-    # Some flows (e.g. fallback register) need an email even if the task doesn't provide one.
-    if '<email>' not in replacements and '<username>' in replacements and replacements.get('<username>'):
-        replacements['<email>'] = f"{replacements['<username>']}@example.com"
-    page_summary = _sanitize_text(_summarize_html(html), replacements)
-    dom_digest = _sanitize_text(_dom_digest(html), replacements)
-    task = _sanitize_text(str(task or ""), replacements)
-    task = _canonicalize_task_with_placeholders(task, replacements)
-
-    # Prefer canonical placeholders from relevant_data (e.g. login creds) over ambiguous task strings.
+    page_summary = _summarize_html(html)
+    dom_digest = _dom_digest(html)
+    task = str(task or "")
     task_for_llm = task
-    # Always show credentials as placeholders (never raw values).
-    cred_lines = []
-    if "<username>" in replacements: cred_lines.append("username=<username>")
-    if "<email>" in replacements: cred_lines.append("email=<email>")
-    if "<password>" in replacements: cred_lines.append("password=<password>")
-    credentials_hint = "\n".join(cred_lines)
+    credentials_hint = ""
+
 
     # Extract + rank candidates before LLM.
     candidates = _extract_candidates(html, max_candidates=80)
     candidates_all = list(candidates)
     candidates = _rank_candidates(task, candidates, max_candidates=30)
-
-        # Deterministic login flow: fill standard username/password form and submit.
-    # This reduces LLM brittleness and cost for the AUTH use-cases.
-    try:
-        if '/login' in str(url) or 'login-username' in str(html):
-            u_ph = '<username>'
-            pw_ph = '<password>'
-
-            # page.content() usually does NOT reflect live input values reliably.
-            # Use per-task state to sequence username -> password -> submit.
-            st = _TASK_STATE.get(task_id) if task_id else None
-            if not isinstance(st, dict):
-                st = {}
-                if task_id:
-                    _TASK_STATE[task_id] = st
-
-            if not st.get('auto_login_typed_username'):
-                i_u = _find_candidate_by_attr(candidates_all, 'id', 'login-username')
-                if isinstance(i_u, int):
-                    sel = candidates_all[i_u].selector
-                    st['auto_login_typed_username'] = True
-                    _update_task_state(task_id, str(url), 'auto_login_type_username')
-                    return _resp([{'type': 'TypeAction', 'selector': sel, 'text': u_ph}], {'decision': 'auto_login_type_username', 'candidate_id': i_u})
-
-            if not st.get('auto_login_typed_password'):
-                i_pw = _find_candidate_by_attr(candidates_all, 'id', 'password-entry-field')
-                if isinstance(i_pw, int):
-                    sel = candidates_all[i_pw].selector
-                    st['auto_login_typed_password'] = True
-                    _update_task_state(task_id, str(url), 'auto_login_type_password')
-                    return _resp([{'type': 'TypeAction', 'selector': sel, 'text': pw_ph}], {'decision': 'auto_login_type_password', 'candidate_id': i_pw})
-
-            i_btn = _find_candidate_by_attr(candidates_all, 'id', 'signin-control')
-            if isinstance(i_btn, int):
-                sel = candidates_all[i_btn].click_selector()
-                _update_task_state(task_id, str(url), 'auto_login_submit')
-                return _resp([{'type': 'ClickAction', 'selector': sel}], {'decision': 'auto_login_submit', 'candidate_id': i_btn})
-    except Exception:
-        pass
-
-# Deterministic register flow: some demo webs require creating the login user after DB reset.
-    # This bypasses LLM brittleness for a very standard multi-input form.
-    try:
-        if '/register' in str(url) or 'register-username-input' in str(html):
-            u = str(replacements.get('<username>') or '')
-            pw = str(replacements.get('<password>') or '')
-
-            # Fill username
-            cur_u = _extract_input_value_by_id(str(html), 'register-username-input')
-            if u and cur_u != u:
-                i_u = _find_candidate_by_attr(candidates_all, 'id', 'register-username-input')
-                if isinstance(i_u, int):
-                    sel = candidates_all[i_u].selector
-                    _update_task_state(task_id, str(url), 'auto_register_type_username')
-                    return _resp([{'type': 'TypeAction', 'selector': sel, 'text': u}], {'decision': 'auto_register_type_username', 'candidate_id': i_u})
-
-            # Fill password
-            cur_pw = _extract_input_value_by_id(str(html), 'register-password-input')
-            if pw and cur_pw != pw:
-                i_pw = _find_candidate_by_attr(candidates_all, 'id', 'register-password-input')
-                if isinstance(i_pw, int):
-                    sel = candidates_all[i_pw].selector
-                    _update_task_state(task_id, str(url), 'auto_register_type_password')
-                    return _resp([{'type': 'TypeAction', 'selector': sel, 'text': pw}], {'decision': 'auto_register_type_password', 'candidate_id': i_pw})
-
-            # Fill confirm password
-            cur_cpw = _extract_input_value_by_id(str(html), 'register-confirm-password-input')
-            if pw and cur_cpw != pw:
-                i_cpw = _find_candidate_by_attr(candidates_all, 'id', 'register-confirm-password-input')
-                if isinstance(i_cpw, int):
-                    sel = candidates_all[i_cpw].selector
-                    _update_task_state(task_id, str(url), 'auto_register_type_confirm')
-                    return _resp([{'type': 'TypeAction', 'selector': sel, 'text': pw}], {'decision': 'auto_register_type_confirm', 'candidate_id': i_cpw})
-
-            # Click Create account
-            i_btn = _find_candidate_by_attr(candidates_all, 'id', 'create-account-button')
-            if isinstance(i_btn, int):
-                sel = candidates_all[i_btn].click_selector()
-                _update_task_state(task_id, str(url), 'auto_register_submit')
-                return _resp([{'type': 'ClickAction', 'selector': sel}], {'decision': 'auto_register_submit', 'candidate_id': i_btn})
-    except Exception:
-        pass
-
-    # If login failed with an explicit error, try the Register flow once (some demo webs require creating the user).
-    try:
-        if 'invalid credentials' in (page_summary or '').lower() or 'invalid credentials' in (dom_digest or '').lower():
-            st = _TASK_STATE.get(task_id) if task_id else None
-            attempted = bool(st.get('attempted_register')) if isinstance(st, dict) else False
-            if not attempted:
-                for i, c in enumerate(candidates[:30]):
-                    t = (c.text or '').strip().lower()
-                    ctx = (c.context or '').strip().lower()
-                    if 'register' in t or 'register' in ctx:
-                        if isinstance(st, dict):
-                            st['attempted_register'] = True
-                        reg_url = _with_path_and_seed(str(url), '/register')
-                        _update_task_state(task_id, str(url), f'auto_register_nav:{reg_url}')
-                        return _resp([{'type': 'NavigateAction', 'selector': None, 'url': reg_url, 'go_back': False, 'go_forward': False}], {
-                            'decision': 'auto_register_nav',
-                            'candidate_id': int(i),
-                        })
-    except Exception:
-        pass
 
     if task_id == "check":
         # Permit repo self-checks without requiring OPENAI credentials.
@@ -1381,23 +1077,12 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
             return _resp([{"type": "ClickAction", "selector": selector}], {"decision": "click", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
 
         selector = c.selector
-
         if action == "type":
-            ph = _credential_placeholder_for_candidate(c)
-            if ph and ph in replacements:
-                # Force credential fields to use the structured creds, not brittle literals from the task text.
-                text = ph
-
-            if isinstance(text, str):
-                text = _apply_placeholders(text, replacements)
             if not text:
                 raise HTTPException(status_code=400, detail="type action missing text")
             _update_task_state(task_id, str(url), f"type:{_selector_repr(selector)}")
             return _resp([{"type": "TypeAction", "selector": selector, "text": str(text)}], {"decision": "type", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
-
         if action == "select":
-            if isinstance(text, str):
-                text = _apply_placeholders(text, replacements)
             if not text:
                 raise HTTPException(status_code=400, detail="select action missing text")
             _update_task_state(task_id, str(url), f"select:{_selector_repr(selector)}")
