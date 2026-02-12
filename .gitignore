@@ -40,6 +40,7 @@ venv/
 env/
 .venv/
 .env/
+.env
 instance/
 .pytest_cache/
 
@@ -54,6 +55,7 @@ instance/
 .DS_Store
 Thumbs.db
 *.log
+data/
 Pipfile.lock  # Recommended to be included in version control per pypa/pipenv#598
 
 # Jupyter Notebook
