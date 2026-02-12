@@ -29,7 +29,7 @@ from dotenv import load_dotenv
 
 operator_env = SCRIPT_DIR / ".env"
 if operator_env.exists():
-    load_dotenv(operator_env, override=True)
+    load_dotenv(operator_env, override=False)
 
 # ── Imports ──────────────────────────────────────────────────────
 from loguru import logger
@@ -120,7 +120,7 @@ async def run_evaluation(
         from dotenv import load_dotenv
         operator_env = Path(__file__).resolve().parent / ".env"
         if operator_env.exists():
-            load_dotenv(operator_env, override=True)
+            load_dotenv(operator_env, override=False)
     except Exception:
         pass
 
@@ -156,6 +156,74 @@ async def run_evaluation(
     start_server = os.getenv("START_AGENT_SERVER", "1") in {"1", "true", "yes"}
     web_agent_id = os.getenv("WEB_AGENT_ID", "1").strip() or "1"
 
+
+    def _prompt_for_agent(task_prompt: str, use_case_name: str) -> str:
+        """Ensure the agent sees placeholders (not concrete credentials) for auth-related use cases.
+
+        Our cache may contain legacy prompts like: username '<web_agent_id>' password 'password123'.
+        For agent implementations (miners) we want stable placeholders: <username>/<password>.
+        """
+        p = str(task_prompt or "")
+        uc = (use_case_name or "").upper()
+        if uc == "LOGIN":
+            return "Login where username equals <username> and password equals <password>."
+        if uc == "REGISTRATION":
+            return "Register where username equals <username>, email equals <email> and password equals <password>."
+        if uc == "LOGOUT":
+            return "Login where username equals <username> and password equals <password>, then logout."
+        return p
+
+
+    def _sanitize_snapshot_for_agent(html: str, use_case_name: str) -> str:
+        """Mask only secrets in HTML while keeping non-secret filled state visible.
+
+        IMPORTANT: If we mask username values to <username>, the agent may think the field is still empty
+        and re-type forever. For auth flows we only mask passwords.
+        """
+        if not html:
+            return html
+        uc = (use_case_name or '').upper()
+        if uc in {'LOGIN', 'LOGOUT', 'REGISTRATION'}:
+            out = html
+            # Mask any concrete password we might have typed.
+            out = out.replace('Passw0rd!', '<password>')
+            out = out.replace('password123', '<password>')
+            return out
+        # Default sanitizer masks usernames too (good for generic runs), but can confuse login flows.
+        return sanitize_snapshot_html(html, web_agent_id=web_agent_id)
+
+
+    def _replace_placeholders_in_action_fields(action: BaseAction, *, username: str, password: str, web_agent_id_value: str) -> None:
+        """Materialize placeholders (and a couple legacy literals) in-place before execution."""
+        fields = ["text", "value", "url", "email", "username", "password"]
+        for field_name in fields:
+            if not hasattr(action, field_name):
+                continue
+            v = getattr(action, field_name)
+            if not isinstance(v, str):
+                continue
+            nv = v
+            nv = nv.replace("<username>", username)
+            nv = nv.replace("<password>", password)
+            nv = nv.replace("<signup_username>", f"new{username}")
+            nv = nv.replace("<signup_email>", f"new{username}@gmail.com")
+            nv = nv.replace("<signup_password>", password)
+            nv = nv.replace("<web_agent_id>", web_agent_id_value)
+            if nv == "password123":
+                nv = password
+            if nv != v:
+                setattr(action, field_name, nv)
+
+        if hasattr(action, "selector") and getattr(action, "selector", None) is not None:
+            sel = getattr(action, "selector", None)
+            if hasattr(sel, "value") and isinstance(sel.value, str):
+                sv = sel.value
+                nsv = sv.replace("<web_agent_id>", web_agent_id_value)
+                nsv = nsv.replace("<username>", username)
+                nsv = nsv.replace("<password>", password)
+                if nsv != sv:
+                    sel.value = nsv
+
     def _port_available(port: int) -> bool:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -174,7 +242,7 @@ async def run_evaluation(
 
     # If we're starting the server locally, choose a free port and point the client to it.
     if start_server:
-        preferred_port = int(os.getenv("AGENT_PORT", "8000"))
+        preferred_port = int(os.getenv("AGENT_PORT", "5000"))
         port = _pick_port(preferred_port)
         if not agent_base_url:
             agent_base_url = f"http://127.0.0.1:{port}"
@@ -214,7 +282,7 @@ async def run_evaluation(
         time.sleep(1.5)
     else:
         if not agent_base_url:
-            agent_base_url = "http://127.0.0.1:8000"
+            agent_base_url = "http://127.0.0.1:5000"
         server_proc = None
 
 
@@ -304,6 +372,22 @@ async def run_evaluation(
 
             try:
                 prepared_task = task
+                # Normalize legacy LOGIN tasks that still carry <web_agent_id>/password123 criteria.
+                # IWA main expects placeholders and validates LOGIN via username in backend events.
+                if (uc_name or '').upper() == 'LOGIN':
+                    try:
+                        for t in (prepared_task.tests or []):
+                            ev = getattr(t, 'event_name', None)
+                            if str(ev).upper() != 'LOGIN':
+                                continue
+                            crit = getattr(t, 'event_criteria', None)
+                            if isinstance(crit, dict):
+                                # Only username is meaningful for LoginEvent in autocinema.
+                                crit.pop('password', None)
+                                crit['username'] = f'user{web_agent_id}'
+                                t.event_criteria = crit
+                    except Exception:
+                        pass
                 # Unique id for the agent/gateway header to avoid leaking state across repeats.
                 episode_task_id = f"{prepared_task.id}-{seed_used}-{r}"
 
@@ -317,10 +401,11 @@ async def run_evaluation(
                 total_steps = 0
 
                 for step_idx in range(max_steps):
+                    prepared_task.prompt = _prompt_for_agent(str(prepared_task.prompt), uc_name)
                     actions, metrics = await call_agent_act(
                         prepared_task,
                         episode_task_id=episode_task_id,
-                        snapshot_html=sanitize_snapshot_html(step_result.snapshot.html, web_agent_id=web_agent_id),
+                        snapshot_html=_sanitize_snapshot_for_agent(step_result.snapshot.html, uc_name),
                         url=step_result.snapshot.url,
                         step_index=step_idx,
                         history=history,
@@ -349,7 +434,13 @@ async def run_evaluation(
                     if actions:
                         sol = TaskSolution(task_id=str(episode_task_id), actions=actions, web_agent_id=web_agent_id)
                         sol.replace_web_agent_id()
-                        sol.replace_credentials(web_agent_id=web_agent_id)
+
+                        # Materialize placeholders (and a couple legacy literals) before browser execution.
+                        username = f"user{web_agent_id}"
+                        password = os.getenv("EVAL_PASSWORD", "Passw0rd!")
+                        for a in sol.actions:
+                            _replace_placeholders_in_action_fields(a, username=username, password=password, web_agent_id_value=web_agent_id)
+
                         action = sol.actions[0]
                         step_result = await evaluator.step(action)
                     else:

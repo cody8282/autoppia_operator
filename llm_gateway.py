@@ -7,6 +7,26 @@ import os
 import httpx
 
 
+def is_sandbox_gateway_base_url(base_url: str) -> bool:
+    """
+    Detect whether requests are routed through the validator's local sandbox gateway.
+
+    In the subnet runtime, the validator injects:
+      OPENAI_BASE_URL=http://sandbox-gateway:9000/openai/v1
+    and the gateway uses its own upstream provider keys. Agent code must not
+    require (nor receive) real provider API keys in this mode.
+    """
+    if os.getenv("SANDBOX_GATEWAY_URL"):
+        return True
+    try:
+        url = httpx.URL((base_url or "").strip())
+        host = (url.host or "").lower()
+        # Allow common local dev hosts too; the gateway doesn't require auth.
+        return host in {"sandbox-gateway", "localhost", "127.0.0.1"}
+    except Exception:
+        return False
+
+
 class LLMGateway:
     """
     Minimal gateway-style OpenAI client.
@@ -35,14 +55,15 @@ class LLMGateway:
 
     def chat_completions(self, *, task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
         api_key = self.api_key if self.api_key is not None else os.getenv("OPENAI_API_KEY", "")
-        if not api_key:
+        if not api_key and not is_sandbox_gateway_base_url(self.base_url):
             raise RuntimeError("OPENAI_API_KEY not set")
 
         headers = {
-            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "IWA-Task-ID": str(task_id),
         }
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
 
         with httpx.Client(timeout=self.timeout_seconds) as client:
             resp = client.post(
@@ -77,22 +98,58 @@ def openai_chat_completions(
     temperature: float = 0.2,
     max_tokens: int = 300,
 ) -> Dict[str, Any]:
-    """Convenience wrapper used by the agent."""
+    """Convenience wrapper used by the agent.
+
+    Notes:
+    - Some models (e.g. gpt-5) reject `temperature` and `max_tokens` on `/chat/completions`.
+      For those we use `max_completion_tokens` and omit `temperature`.
+    - We prefer JSON-mode when available, but retry without it if rejected.
+    """
+    m = str(model)
+
+    # Base payload all models accept.
     body: Dict[str, Any] = {
-        "model": model,
+        "model": m,
         "messages": messages,
-        "temperature": float(temperature),
-        "max_tokens": int(max_tokens),
-        # Prefer JSON-mode when available, but retry without it for providers/models
-        # that reject `response_format` on /chat/completions.
-        "response_format": {"type": "json_object"},
     }
+
+    # Model-specific parameterization.
+    if m.startswith('gpt-5'):
+        # gpt-5: use max_completion_tokens; do not send temperature; avoid response_format.
+        body["max_completion_tokens"] = int(max_tokens)
+    else:
+        body.update({
+            "temperature": float(temperature),
+            "max_tokens": int(max_tokens),
+            "response_format": {"type": "json_object"},
+        })
+
+    def _post(b: Dict[str, Any]) -> Dict[str, Any]:
+        return _default_gateway.chat_completions(task_id=task_id, body=b)
+
     try:
-        return _default_gateway.chat_completions(task_id=task_id, body=body)
+        return _post(body)
     except RuntimeError as e:
         msg = str(e)
+        # Retry without JSON-mode.
         if 'unsupported_parameter' in msg or 'response_format' in msg:
-            body2 = dict(body)
-            body2.pop('response_format', None)
-            return _default_gateway.chat_completions(task_id=task_id, body=body2)
+            b2 = dict(body)
+            b2.pop('response_format', None)
+            return _post(b2)
+
+        # gpt-5 (or future models): if max_tokens is rejected, try max_completion_tokens.
+        if 'unsupported_parameter' in msg and 'max_tokens' in body and 'max_completion_tokens' not in body:
+            b2 = dict(body)
+            b2.pop('max_tokens', None)
+            b2.pop('temperature', None)
+            b2["max_completion_tokens"] = int(max_tokens)
+            b2.pop('response_format', None)
+            return _post(b2)
+
+        # If temperature is rejected, drop it.
+        if 'unsupported_value' in msg and 'temperature' in body:
+            b2 = dict(body)
+            b2.pop('temperature', None)
+            return _post(b2)
+
         raise

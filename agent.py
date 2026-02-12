@@ -11,7 +11,7 @@ from html.parser import HTMLParser
 
 from fastapi import Body, FastAPI, HTTPException
 
-from llm_gateway import openai_chat_completions
+from llm_gateway import openai_chat_completions, is_sandbox_gateway_base_url
 
 try:
     from bs4 import BeautifulSoup  # type: ignore
@@ -1177,24 +1177,32 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     # This reduces LLM brittleness and cost for the AUTH use-cases.
     try:
         if '/login' in str(url) or 'login-username' in str(html):
-            u = str(replacements.get('<username>') or '')
-            pw = str(replacements.get('<password>') or '')
+            u_ph = '<username>'
+            pw_ph = '<password>'
 
-            cur_u = _extract_input_value_by_id(str(html), 'login-username')
-            if u and cur_u != u:
+            # page.content() usually does NOT reflect live input values reliably.
+            # Use per-task state to sequence username -> password -> submit.
+            st = _TASK_STATE.get(task_id) if task_id else None
+            if not isinstance(st, dict):
+                st = {}
+                if task_id:
+                    _TASK_STATE[task_id] = st
+
+            if not st.get('auto_login_typed_username'):
                 i_u = _find_candidate_by_attr(candidates_all, 'id', 'login-username')
                 if isinstance(i_u, int):
                     sel = candidates_all[i_u].selector
+                    st['auto_login_typed_username'] = True
                     _update_task_state(task_id, str(url), 'auto_login_type_username')
-                    return _resp([{'type': 'TypeAction', 'selector': sel, 'text': u}], {'decision': 'auto_login_type_username', 'candidate_id': i_u})
+                    return _resp([{'type': 'TypeAction', 'selector': sel, 'text': u_ph}], {'decision': 'auto_login_type_username', 'candidate_id': i_u})
 
-            cur_pw = _extract_input_value_by_id(str(html), 'password-entry-field')
-            if pw and cur_pw != pw:
+            if not st.get('auto_login_typed_password'):
                 i_pw = _find_candidate_by_attr(candidates_all, 'id', 'password-entry-field')
                 if isinstance(i_pw, int):
                     sel = candidates_all[i_pw].selector
+                    st['auto_login_typed_password'] = True
                     _update_task_state(task_id, str(url), 'auto_login_type_password')
-                    return _resp([{'type': 'TypeAction', 'selector': sel, 'text': pw}], {'decision': 'auto_login_type_password', 'candidate_id': i_pw})
+                    return _resp([{'type': 'TypeAction', 'selector': sel, 'text': pw_ph}], {'decision': 'auto_login_type_password', 'candidate_id': i_pw})
 
             i_btn = _find_candidate_by_attr(candidates_all, 'id', 'signin-control')
             if isinstance(i_btn, int):
@@ -1288,7 +1296,8 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         extra_hint = ""
 
     try:
-        if not os.getenv("OPENAI_API_KEY"):
+        base_url = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+        if not os.getenv("OPENAI_API_KEY") and not is_sandbox_gateway_base_url(base_url):
             raise RuntimeError("OPENAI_API_KEY not set")
         decision = _llm_decide(
             task_id=task_id,
