@@ -1023,6 +1023,220 @@ def _preserve_seed_url(target_url: str, current_url: str) -> str:
 
 
 
+# -----------------------------
+# HTML Tools (for LLM-assisted inspection)
+# -----------------------------
+
+def _safe_truncate(s: str, n: int) -> str:
+    s = str(s or "")
+    return s if len(s) <= n else (s[: max(0, n - 3)] + "...")
+
+
+def _tool_search_text(*, html: str, query: str, regex: bool = False, case_sensitive: bool = False, max_matches: int = 20, context_chars: int = 80) -> Dict[str, Any]:
+    """Search raw HTML text and return small context snippets.
+
+    Generic tool: does not assume any site structure.
+    """
+    q = str(query or "")
+    if not q:
+        return {"ok": False, "error": "missing query"}
+
+    flags = 0 if case_sensitive else re.IGNORECASE
+    try:
+        if regex:
+            pat = re.compile(q, flags)
+        else:
+            pat = re.compile(re.escape(q), flags)
+    except Exception as e:
+        return {"ok": False, "error": f"invalid pattern: {str(e)[:120]}"}
+
+    hay = str(html or "")
+    out = []
+    for m in pat.finditer(hay):
+        if len(out) >= int(max_matches or 0):
+            break
+        a = max(0, m.start() - int(context_chars))
+        b = min(len(hay), m.end() + int(context_chars))
+        out.append({
+            "start": int(m.start()),
+            "end": int(m.end()),
+            "snippet": _safe_truncate(hay[a:b].replace("\n", " ").replace("\r", " "), 2 * int(context_chars) + 40),
+        })
+
+    return {"ok": True, "matches": out, "count": len(out)}
+
+
+def _tool_css_select(*, html: str, selector: str, max_nodes: int = 25) -> Dict[str, Any]:
+    """Run a CSS selector over the DOM (via BeautifulSoup) and return summaries."""
+    if BeautifulSoup is None:
+        return {"ok": False, "error": "bs4 not available"}
+    sel = str(selector or "").strip()
+    if not sel:
+        return {"ok": False, "error": "missing selector"}
+
+    try:
+        soup = BeautifulSoup(html or "", "lxml")
+        nodes = soup.select(sel)
+    except Exception as e:
+        return {"ok": False, "error": f"css select failed: {str(e)[:160]}"}
+
+    out = []
+    for n in nodes[: int(max_nodes or 0)]:
+        try:
+            tag = str(getattr(n, "name", "") or "")
+            attrs = _attrs_to_str_map(getattr(n, "attrs", {}) or {})
+            text = _norm_ws(n.get_text(" ", strip=True))
+            out.append({
+                "tag": tag,
+                "attrs": {k: _safe_truncate(v, 120) for k, v in list(attrs.items())[:12]},
+                "text": _safe_truncate(text, 240),
+            })
+        except Exception:
+            continue
+
+    return {"ok": True, "count": len(nodes), "nodes": out}
+
+
+def _tool_extract_forms(*, html: str, max_forms: int = 10, max_inputs: int = 25) -> Dict[str, Any]:
+    """Extract forms and their controls in a structured way (generic)."""
+    if BeautifulSoup is None:
+        return {"ok": False, "error": "bs4 not available"}
+
+    try:
+        soup = BeautifulSoup(html or "", "lxml")
+    except Exception as e:
+        return {"ok": False, "error": f"parse failed: {str(e)[:160]}"}
+
+    forms = []
+    for f in soup.find_all("form")[: int(max_forms or 0)]:
+        try:
+            f_attrs = _attrs_to_str_map(getattr(f, "attrs", {}) or {})
+            inputs = []
+            for el in f.find_all(["input", "textarea", "select", "button"])[: int(max_inputs or 0)]:
+                try:
+                    tag = str(getattr(el, "name", "") or "")
+                    a = _attrs_to_str_map(getattr(el, "attrs", {}) or {})
+                    t = _norm_ws(el.get_text(" ", strip=True))
+                    inputs.append({
+                        "tag": tag,
+                        "type": (a.get("type") or "").lower(),
+                        "id": a.get("id") or "",
+                        "name": a.get("name") or "",
+                        "placeholder": a.get("placeholder") or "",
+                        "aria_label": a.get("aria-label") or "",
+                        "value": _safe_truncate(a.get("value") or "", 120),
+                        "text": _safe_truncate(t, 160),
+                    })
+                except Exception:
+                    continue
+            forms.append({
+                "id": f_attrs.get("id") or "",
+                "name": f_attrs.get("name") or "",
+                "action": f_attrs.get("action") or "",
+                "method": (f_attrs.get("method") or "").upper(),
+                "controls": inputs,
+            })
+        except Exception:
+            continue
+
+    return {"ok": True, "forms": forms, "count": len(forms)}
+
+
+
+
+def _tool_xpath_select(*, html: str, xpath: str, max_nodes: int = 25) -> Dict[str, Any]:
+    """Run an XPath selector over the DOM (via lxml) and return summaries."""
+    xp = str(xpath or "").strip()
+    if not xp:
+        return {"ok": False, "error": "missing xpath"}
+    try:
+        from lxml import html as lxml_html  # type: ignore
+    except Exception:
+        return {"ok": False, "error": "lxml not available"}
+
+    try:
+        doc = lxml_html.fromstring(html or "")
+        nodes = doc.xpath(xp)
+    except Exception as e:
+        return {"ok": False, "error": f"xpath failed: {str(e)[:160]}"}
+
+    out = []
+    for n in nodes[: int(max_nodes or 0)]:
+        try:
+            # lxml may return strings/attrs too.
+            if not hasattr(n, 'tag'):
+                out.append({"value": _safe_truncate(str(n), 240)})
+                continue
+            tag = str(getattr(n, 'tag', '') or '')
+            attrs = {k: _safe_truncate(str(v), 120) for k, v in list(getattr(n, 'attrib', {}) or {}).items()[:12]}
+            text = _norm_ws(' '.join(n.itertext()))
+            out.append({"tag": tag, "attrs": attrs, "text": _safe_truncate(text, 240)})
+        except Exception:
+            continue
+
+    return {"ok": True, "count": len(nodes), "nodes": out}
+
+
+def _tool_visible_text(*, html: str, max_chars: int = 2000) -> Dict[str, Any]:
+    """Extract visible-ish text from the page (best-effort)."""
+    if BeautifulSoup is None:
+        # Fallback: strip tags very crudely.
+        txt = re.sub(r"<[^>]+>", " ", str(html or ""))
+        txt = _norm_ws(txt)
+        return {"ok": True, "text": _safe_truncate(txt, int(max_chars or 0))}
+
+    try:
+        soup = BeautifulSoup(html or "", "lxml")
+        for t in soup(["script", "style", "noscript"]):
+            try:
+                t.decompose()
+            except Exception:
+                pass
+        txt = _norm_ws(soup.get_text(" ", strip=True))
+        return {"ok": True, "text": _safe_truncate(txt, int(max_chars or 0))}
+    except Exception as e:
+        return {"ok": False, "error": f"extract text failed: {str(e)[:160]}"}
+
+def _tool_list_candidates(*, candidates: List["_Candidate"], max_n: int = 80) -> Dict[str, Any]:
+    out = []
+    for i, c in enumerate((candidates or [])[: int(max_n or 0)]):
+        out.append({
+            "id": i,
+            "tag": c.tag,
+            "group": c.group,
+            "text": _safe_truncate(c.text or "", 140),
+            "context": _safe_truncate(c.context or "", 200),
+            "selector": _selector_repr(c.selector) if isinstance(c.selector, dict) else str(c.selector),
+            "click": _selector_repr(c.click_selector()),
+        })
+    return {"ok": True, "count": len(candidates or []), "candidates": out}
+
+
+_TOOL_REGISTRY = {
+    "search_text": _tool_search_text,
+    "visible_text": _tool_visible_text,
+    "css_select": _tool_css_select,
+    "xpath_select": _tool_xpath_select,
+    "extract_forms": _tool_extract_forms,
+    "list_candidates": _tool_list_candidates,
+}
+
+
+def _run_tool(tool: str, args: Dict[str, Any], *, html: str, candidates: List["_Candidate"]) -> Dict[str, Any]:
+    t = str(tool or "").strip()
+    fn = _TOOL_REGISTRY.get(t)
+    if fn is None:
+        return {"ok": False, "error": f"unknown tool: {t}", "known": sorted(_TOOL_REGISTRY.keys())}
+
+    a = args if isinstance(args, dict) else {}
+    # Inject shared state for tools that need it.
+    if t == "list_candidates":
+        return fn(candidates=candidates, **{k: v for k, v in a.items() if k in {"max_n"}})
+    if t in {"search_text", "visible_text", "css_select", "xpath_select", "extract_forms"}:
+        return fn(html=html, **a)
+
+    return {"ok": False, "error": f"tool not wired: {t}"}
+
 def _llm_decide(
     *,
     task_id: str,
@@ -1032,6 +1246,7 @@ def _llm_decide(
     candidates: List[_Candidate],
     page_summary: str,
     dom_digest: str,
+    html_snapshot: str,
     history: List[Dict[str, Any]] | None,
     credentials_hint: str = "",
     extra_hint: str = "",
@@ -1047,7 +1262,7 @@ def _llm_decide(
         "Return a JSON object with keys: action, candidate_id, text, url, evaluation_previous_goal, memory, next_goal. Preserve the current URL query parameters (e.g., seed) unless the task requires changing them. "
         "If a login/register/contact form is present, usually fill required fields before submitting. "
         "After you fill the required fields, submit the form (prefer stable attribute selectors). If the task asks you to navigate to a specific item that matches multiple attributes (e.g., rating/duration/year), prefer selecting a card/link whose surrounding context shows those attributes; do not type numeric constraints into a generic search box unless the task explicitly asks to search by text. "
-        "action must be one of: click,type,select,navigate,scroll_down,scroll_up,done. "
+        "action must be one of: click,type,select,navigate,scroll_down,scroll_up,done. ""You may optionally request an HTML inspection tool instead of an action by returning JSON with keys: tool, args. ""Available tools: search_text(args: {query, regex?, case_sensitive?, max_matches?, context_chars?}); visible_text(args: {max_chars?}); css_select(args: {selector, max_nodes?}); xpath_select(args: {xpath, max_nodes?}); extract_forms(args: {max_forms?, max_inputs?}); list_candidates(args: {max_n?}). ""After a tool result is returned, pick the next action. Prefer at most 2 tool calls per step. "
         "Constraints: for click/type/select, candidate_id must be an integer index into the BROWSER_STATE list (the number inside [..]). "
         "For type/select, text must be non-empty. "
         "Avoid done unless the task is clearly completed."
@@ -1107,15 +1322,21 @@ def _llm_decide(
     max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "350"))
 
     usages: List[Dict[str, Any]] = []
+    tool_calls = 0
+    max_tool_calls = int(os.getenv("AGENT_MAX_TOOL_CALLS", "2"))
+
+    messages = [
+        {"role": "system", "content": system_msg},
+        {"role": "user", "content": user_msg},
+    ]
 
     def _call(extra_system: str = "") -> Dict[str, Any]:
         sys_msg = system_msg + (" " + extra_system if extra_system else "")
+        # Keep system message authoritative even after tool results.
+        msgs = [{"role": "system", "content": sys_msg}] + [m for m in messages if m.get("role") != "system"]
         resp = openai_chat_completions(
             task_id=task_id,
-            messages=[
-                {"role": "system", "content": sys_msg},
-                {"role": "user", "content": user_msg},
-            ],
+            messages=msgs,
             model=str(model),
             temperature=temperature,
             max_tokens=max_tokens,
@@ -1129,11 +1350,12 @@ def _llm_decide(
         content = resp["choices"][0]["message"]["content"]
         obj = _parse_llm_json(content)
         try:
-            obj["_meta"] = {"llm_calls": len(usages), "llm_usages": usages, "model": str(model)}
+            obj["_meta"] = {"llm_calls": len(usages), "llm_usages": usages, "model": str(model), "tool_calls": tool_calls}
         except Exception:
             pass
         return obj
-    def _valid(obj: Dict[str, Any]) -> bool:
+
+    def _valid_action(obj: Dict[str, Any]) -> bool:
         a = (obj.get("action") or "").lower()
         if a not in {"click", "type", "select", "navigate", "scroll_down", "scroll_up", "done"}:
             return False
@@ -1160,20 +1382,62 @@ def _llm_decide(
                     return False
         return True
 
+    def _is_tool(obj: Dict[str, Any]) -> bool:
+        t = obj.get("tool")
+        if not isinstance(t, str) or not t.strip():
+            return False
+        # Tool response should not mix action.
+        if obj.get("action"):
+            return False
+        return True
 
-    try:
-        obj = _call()
-    except Exception:
-        obj = _call("Return ONLY valid JSON. No markdown. No commentary.")
+    # Tool-aware loop.
+    last_obj: Dict[str, Any] = {}
+    for _ in range(max_tool_calls + 2):
+        try:
+            obj = _call()
+        except Exception:
+            obj = _call("Return ONLY valid JSON. No markdown. No commentary.")
 
-    if not _valid(obj):
+        last_obj = obj
+
+        if _is_tool(obj) and tool_calls < max_tool_calls:
+            tool = str(obj.get("tool") or "").strip()
+            args = obj.get("args") if isinstance(obj.get("args"), dict) else {}
+            tool_calls += 1
+            try:
+                result = _run_tool(tool, args, html=html_snapshot, candidates=candidates)
+            except Exception as e:
+                result = {"ok": False, "error": str(e)[:200]}
+
+            # IMPORTANT: tools must inspect snapshot_html, not dom_digest. We'll attach snapshot_html via closure.
+            # This placeholder is replaced below.
+            messages.append({"role": "assistant", "content": json.dumps({"tool": tool, "args": args}, ensure_ascii=True)})
+            messages.append({"role": "user", "content": "TOOL_RESULT " + tool + ": " + json.dumps(result, ensure_ascii=True)})
+            continue
+
+        if _valid_action(obj):
+            try:
+                obj["_meta"] = {"llm_calls": len(usages), "llm_usages": usages, "model": str(model), "tool_calls": tool_calls}
+            except Exception:
+                pass
+            return obj
+
+        # Ask once to fix invalid response.
         obj = _call(
             "Your previous JSON was invalid. Fix it. "
             f"candidate_id must be an integer in [0, {len(candidates) - 1}]. "
             "If action is type/select you must include non-empty text. "
             "If stuck, scroll_down."
         )
-    return obj
+        if _valid_action(obj):
+            try:
+                obj["_meta"] = {"llm_calls": len(usages), "llm_usages": usages, "model": str(model), "tool_calls": tool_calls}
+            except Exception:
+                pass
+            return obj
+
+    return last_obj
 
 
 def _update_task_state(task_id: str, url: str, sig: str) -> None:
@@ -1204,6 +1468,7 @@ def _compute_state_delta(
     url: str,
     page_summary: str,
     dom_digest: str,
+    html_snapshot: str,
     candidates: List[_Candidate],
 ) -> str:
     """Compute a compact diff signal between current and previous observed state."""
@@ -1315,7 +1580,7 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     except Exception:
         prev_sig_set = None
 
-    state_delta = _compute_state_delta(task_id=task_id, url=str(url), page_summary=page_summary, dom_digest=dom_digest, candidates=candidates)
+    state_delta = _compute_state_delta(task_id=task_id, url=str(url), page_summary=page_summary, dom_digest=dom_digest, html_snapshot=html, candidates=candidates)
     try:
         if isinstance(st, dict):
             last_url = str(st.get("last_url") or "")
@@ -1337,6 +1602,7 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
             candidates=candidates,
             page_summary=page_summary,
             dom_digest=dom_digest,
+            html_snapshot=html,
             history=history,
             credentials_hint=credentials_hint,
             extra_hint=extra_hint,
