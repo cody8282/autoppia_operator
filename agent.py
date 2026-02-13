@@ -103,6 +103,7 @@ class _Candidate:
         text_selector: Optional[Dict[str, Any]] = None,
         context: str = "",
         group: str = "",
+        container_chain: list[str] | None = None,
     ):
         self.selector = selector
         self.text_selector = text_selector
@@ -111,6 +112,7 @@ class _Candidate:
         self.attrs = attrs
         self.context = context
         self.group = group
+        self.container_chain = container_chain or []
 
     def click_selector(self) -> Dict[str, Any]:
         """Selector for click-like actions.
@@ -206,7 +208,7 @@ class _CandidateExtractor(HTMLParser):
             label = attr_map.get("aria-label") or attr_map.get("placeholder") or attr_map.get("title") or ""
             selector = _build_selector(tag, attr_map, text=label)
             group = 'FORM' if tag in {'input','textarea','select'} else ('LINKS' if tag=='a' else 'BUTTONS')
-            self.candidates.append(_Candidate(selector, label, tag, attr_map, context="", group=group))
+            self.candidates.append(_Candidate(selector, label, tag, attr_map, context="", group=group, container_chain=[group]))
 
     def handle_data(self, data: str) -> None:
         if self._last_tag in {"button", "a"} and data.strip():
@@ -292,6 +294,65 @@ def _extract_label_from_bs4(soup, el, attr_map: Dict[str, str]) -> str:
     return ""
 
 
+
+
+def _container_chain_from_el(soup, el) -> list[str]:
+    """Return a short container path for an element to render a simplified DOM tree."""
+    chain: list[str] = []
+    try:
+        # Limit depth to keep prompts small.
+        ancestors = list(el.parents) if hasattr(el, 'parents') else []
+        # BeautifulSoup yields [element, ..., document]; reverse to go top-down.
+        for a in reversed(ancestors):
+            try:
+                tag = str(getattr(a, 'name', '') or '')
+                if not tag or tag in {'[document]', 'html', 'body'}:
+                    continue
+                if tag not in {'header', 'nav', 'main', 'form', 'section', 'article', 'aside', 'footer', 'ul', 'ol', 'table', 'div'}:
+                    continue
+
+                aid = ''
+                try:
+                    aid = str(a.get('id') or a.get('name') or '').strip()
+                except Exception:
+                    aid = ''
+
+                role = ''
+                try:
+                    role = str(a.get('role') or '').strip()
+                except Exception:
+                    role = ''
+
+                # Try to pull a nearby heading (h1-h3) for more semantic labeling.
+                heading = ''
+                try:
+                    h = a.find(['h1', 'h2', 'h3'])
+                    if h is not None:
+                        heading = _norm_ws(h.get_text(' ', strip=True))
+                except Exception:
+                    heading = ''
+
+                label_bits = [tag]
+                if aid:
+                    label_bits.append(f"#{aid}")
+                if role and role not in {'presentation'}:
+                    label_bits.append(f"role={role}")
+                if heading:
+                    label_bits.append(heading[:50])
+
+                label = ' '.join([b for b in label_bits if b])
+                label = _norm_ws(label)
+                if label and (not chain or chain[-1] != label):
+                    chain.append(label)
+                if len(chain) >= 4:
+                    break
+            except Exception:
+                continue
+    except Exception:
+        return chain
+
+    # Keep last 3 containers for focus.
+    return chain[-3:]
 def _extract_candidates_bs4(html: str, *, max_candidates: int) -> List[_Candidate]:
     soup = BeautifulSoup(html, "lxml")
 
@@ -334,7 +395,7 @@ def _extract_candidates_bs4(html: str, *, max_candidates: int) -> List[_Candidat
                     fid = ''
                 group = f"FORM:{fid}" if fid else 'FORM'
         except Exception:
-            group = group
+            group = groupgroup
 
         # Skip obvious non-interactives.
         if tag == "input" and attr_map.get("type", "").lower() == "hidden":
@@ -369,6 +430,12 @@ def _extract_candidates_bs4(html: str, *, max_candidates: int) -> List[_Candidat
             context = context[:177] + "..."
         primary = _build_selector(tag, attr_map, text=label)
 
+        container_chain = []
+        try:
+            container_chain = _container_chain_from_el(soup, el)
+        except Exception:
+            container_chain = []
+
         text_sel = None
         if tag in {"a", "button"} and dom_label:
             # Click by DOM text, even if we augmented label for prompting.
@@ -383,7 +450,7 @@ def _extract_candidates_bs4(html: str, *, max_candidates: int) -> List[_Candidat
             continue
         seen.add(sig)
 
-        out.append(_Candidate(primary, label, tag, attr_map, text_selector=text_sel, context=context, group=group))
+        out.append(_Candidate(primary, label, tag, attr_map, text_selector=text_sel, context=context, group=group, container_chain=container_chain))
         if len(out) >= max_candidates:
             break
 
@@ -772,33 +839,44 @@ def _history_hint(history: List[Dict[str, Any]] | None) -> str:
 
 
 def _format_browser_state(*, candidates: List[_Candidate], prev_sig_set: set[str] | None) -> str:
-    # Browser-use-like state view: numbered interactives, grouped + new markers.
-    groups_order = ['HEADER', 'NAV', 'FORM', 'FORM:', 'PAGE', 'FOOTER', 'BUTTONS', 'LINKS']
+    """Browser-use-like state view: numbered interactives, with a simplified DOM tree."""
 
-    group_items: dict[str, list[tuple[int, _Candidate]]] = {}
+    # Build a tree based on container_chain (preferred) or group fallback.
+    class _TNode:
+        __slots__ = ("name", "children", "items")
+
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.children: dict[str, _TNode] = {}
+            self.items: list[tuple[int, _Candidate]] = []
+
+    root = _TNode('ROOT')
+
+    def _chain_for(c: _Candidate) -> list[str]:
+        ch = []
+        try:
+            ch = list(getattr(c, 'container_chain', []) or [])
+        except Exception:
+            ch = []
+        if not ch:
+            g = (getattr(c, 'group', '') or 'PAGE').strip() or 'PAGE'
+            ch = [g]
+        # keep it small
+        return [str(x)[:80] for x in ch if str(x).strip()][:3]
+
+    # Insert candidates
     for i, c in enumerate(candidates):
-        g = (getattr(c, 'group', '') or 'PAGE').strip() or 'PAGE'
-        if g == 'FORM:':
-            g = 'FORM'
-        group_items.setdefault(g, []).append((i, c))
+        node = root
+        for part in _chain_for(c):
+            if part not in node.children:
+                node.children[part] = _TNode(part)
+            node = node.children[part]
+        node.items.append((i, c))
 
-    def _g_key(g: str) -> tuple[int, str]:
-        for j, pref in enumerate(groups_order):
-            if pref.endswith(':') and g.startswith(pref):
-                return (j, g)
-            if g == pref:
-                return (j, g)
-        return (len(groups_order), g)
-
-    lines: list[str] = []
-    for g in sorted(group_items.keys(), key=_g_key):
-        items = group_items[g]
-        indent = ''
-        if g != 'PAGE':
-            lines.append(f"{g}:")
-            indent = "	"
-
-        for i, c in items:
+    def _render(node: _TNode, indent: str = '') -> list[str]:
+        lines: list[str] = []
+        # render items first within this container
+        for i, c in node.items:
             label = (c.text or '').strip() or (c.attrs or {}).get('placeholder', '') or (c.attrs or {}).get('aria-label', '')
             label = str(label).strip()
 
@@ -818,7 +896,16 @@ def _format_browser_state(*, candidates: List[_Candidate], prev_sig_set: set[str
 
             lines.append(f"{indent}{star}[{i}]<{c.tag}>{label}</{c.tag}>{attrs_str}")
 
-    return "\n".join(lines)
+        # then render child containers
+        for name, child in node.children.items():
+            lines.append(f"{indent}{name}:")
+            lines.extend(_render(child, indent + "	"))
+
+        return lines
+
+    rendered = _render(root, '')
+    return "\n".join(rendered)
+
 
 def _rewrite_task_for_llm(task: str, relevant_data: Dict[str, Any]) -> str:
     """Rewrite task text to prefer canonical placeholders from relevant_data.
