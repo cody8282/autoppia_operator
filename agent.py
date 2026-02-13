@@ -353,6 +353,9 @@ def _container_chain_from_el(soup, el) -> list[str]:
 
     # Keep last 3 containers for focus.
     return chain[-3:]
+
+
+
 def _extract_candidates_bs4(html: str, *, max_candidates: int) -> List[_Candidate]:
     soup = BeautifulSoup(html, "lxml")
 
@@ -395,7 +398,7 @@ def _extract_candidates_bs4(html: str, *, max_candidates: int) -> List[_Candidat
                     fid = ''
                 group = f"FORM:{fid}" if fid else 'FORM'
         except Exception:
-            group = groupgroup
+            group = group
 
         # Skip obvious non-interactives.
         if tag == "input" and attr_map.get("type", "").lower() == "hidden":
@@ -404,13 +407,17 @@ def _extract_candidates_bs4(html: str, *, max_candidates: int) -> List[_Candidat
             continue
 
         label = _extract_label_from_bs4(soup, el, attr_map)
+
         dom_label = label
         context = ""
+        context_raw = ""
         title = ""
         try:
             parent = el.find_parent(["li", "tr", "article", "section", "div"])
             if parent is not None:
-                context = _norm_ws(parent.get_text(" ", strip=True))
+                # Preserve line breaks for card-like metadata extraction.
+                context_raw = parent.get_text("\n", strip=True)
+                context = _norm_ws(context_raw)
                 # Try to pull a nearby title so identical buttons become distinguishable.
                 h = parent.find(["h1", "h2", "h3", "h4"])
                 if h is not None:
@@ -421,6 +428,7 @@ def _extract_candidates_bs4(html: str, *, max_candidates: int) -> List[_Candidat
                         title = _norm_ws(t.get_text(" ", strip=True))
         except Exception:
             context = ""
+            context_raw = ""
             title = ""
 
         if title and dom_label and dom_label.strip().lower() in {"view details", "view info", "details"}:
@@ -428,7 +436,53 @@ def _extract_candidates_bs4(html: str, *, max_candidates: int) -> List[_Candidat
 
         if context and len(context) > 180:
             context = context[:177] + "..."
-        primary = _build_selector(tag, attr_map, text=label)
+
+        # Build a selector. Use dom_label for text-based fallbacks to avoid including long meta.
+        primary = _build_selector(tag, attr_map, text=(dom_label or label))
+
+        # Improve selectorability + promptability for <select> elements that lack stable attributes.
+        if tag == "select":
+            # Capture options for prompting and build a selector that uniquely identifies the select.
+            opts: list[tuple[str, str]] = []
+            try:
+                tmp: list[tuple[str, str]] = []
+                for o in el.find_all("option")[:12]:
+                    t = ""
+                    v = ""
+                    try:
+                        t = o.get_text(" ", strip=True)
+                        v = str(o.get("value") or "").strip()
+                    except Exception:
+                        t = ""
+                        v = ""
+                    if t:
+                        tmp.append((t, v))
+                opts = tmp
+            except Exception:
+                opts = []
+
+            if isinstance(primary, dict) and primary.get("type") == "attributeValueSelector" and str(primary.get("attribute") or "") == "custom" and str(primary.get("value") or "") == "select":
+                first_opt = ""
+                try:
+                    if opts:
+                        first_opt = str(opts[0][0] or "").strip()
+                except Exception:
+                    first_opt = ""
+                if first_opt:
+                    safe = first_opt.replace("\"", "'")
+                    # This is typically unique and avoids strict-mode ambiguity.
+                    primary = _sel_custom(f'select:has(option:has-text("{safe}"))')
+
+            if opts:
+                show: list[str] = []
+                for t, v in opts[:8]:
+                    if v and v != t:
+                        show.append(f"{t} (value={v})")
+                    else:
+                        show.append(t)
+                opt_preview = ", ".join(show)
+                label = (dom_label or "select") + f" options=[{opt_preview}]"
+                label = label[:200]
 
         container_chain = []
         try:
@@ -584,40 +638,6 @@ def _dom_digest(html: str, limit: int = 1400) -> str:
 # Structured hints (entity extraction)
 # -----------------------------
 
-def _parse_movie_snippet(snippet: str) -> Dict[str, Any]:
-    """Best-effort parse of a movie card text snippet.
-
-    Expected-ish patterns seen in demo webs:
-      "Action The Lord of the Rings: The Fellowship of the Ring 2001 · 178 min View detail"
-      "Comedy 5 Amelie ..."
-
-    We keep this intentionally heuristic.
-    """
-    out: Dict[str, Any] = {}
-    sn = _norm_ws(snippet)
-
-    # year + duration pattern
-    m = re.search(r"(?P<title>.+?)\s+(?P<year>\d{4})\s*[·\-|]\s*(?P<dur>\d{2,3})\s*min", sn, flags=re.I)
-    if m:
-        out["title"] = _norm_ws(m.group('title'))[:120]
-        out["year"] = int(m.group('year'))
-        out["duration_min"] = int(m.group('dur'))
-
-    # crude genre guess: first token if it's a word and not too long
-    first = sn.split(' ', 1)[0] if sn else ''
-    if first and first.isalpha() and 3 <= len(first) <= 20:
-        out.setdefault('genre', first)
-
-    # rating: single number early (e.g. "Comedy 5 Amelie")
-    m2 = re.search(r"\b(?P<rating>[0-9](?:\.[0-9])?)\b", sn)
-    if m2:
-        try:
-            out.setdefault('rating', float(m2.group('rating')))
-        except Exception:
-            pass
-
-    out['snippet'] = sn[:220]
-    return out
 
 
 def _structured_hints(task: str, candidates: List[_Candidate]) -> Dict[str, Any]:
@@ -647,91 +667,27 @@ def _structured_hints(task: str, candidates: List[_Candidate]) -> Dict[str, Any]
             'candidate_id': i,
             'kind': kind,
             'label': label[:80],
+            'required': bool((c.attrs or {}).get('required') is not None),
+            'value_len': len(str((c.attrs or {}).get('value') or '')),
             'attrs': {k: v for k, v in attrs.items() if v},
         })
-
-    # Movie detail buttons
-    movie_buttons: List[Dict[str, Any]] = []
-    for i, c in enumerate(candidates):
-        if c.tag not in {'a', 'button'}:
-            continue
-        label = (c.text or '').strip().lower()
-        if 'view detail' in label or 'view details' in label or 'details' == label:
-            parsed = _parse_movie_snippet(c.context or '')
-            parsed['candidate_id'] = i
-            movie_buttons.append(parsed)
-        # Also pick common id patterns.
-        cid = (c.attrs.get('id') or '').lower()
-        if cid and any(k in cid for k in ['view-details', 'film-details', 'details-btn', 'view-info']):
-            parsed = _parse_movie_snippet(c.context or '')
-            parsed['candidate_id'] = i
-            movie_buttons.append(parsed)
-
-    
-
-    # Primary buttons (submit/signin/signup/send/save)
-    buttons: list[dict[str, Any]] = []
-    for i, c in enumerate(candidates):
-        if c.tag not in {'a', 'button'}:
-            continue
-        label = (c.text or '').strip()
-        blob = ' '.join([
-            label,
-            c.context or '',
-            c.attrs.get('id',''),
-            c.attrs.get('name',''),
-            c.attrs.get('type',''),
-            c.attrs.get('aria-label',''),
-            c.attrs.get('role',''),
-            c.attrs.get('href',''),
-        ]).lower()
-
-        kind = None
-        if 'type=submit' in blob or 'submit' in blob:
-            kind = 'submit'
-        if any(k in blob for k in ['sign in', 'log in', 'login', 'signin']):
-            kind = 'signin'
-        if any(k in blob for k in ['sign up', 'signup', 'register', 'create account']):
-            kind = 'signup'
-        if any(k in blob for k in ['send', 'message', 'contact']):
-            kind = 'send'
-        if any(k in blob for k in ['save', 'update', 'apply', 'confirm']):
-            kind = kind or 'save'
-
-        if kind:
-            buttons.append({'candidate_id': i, 'kind': kind, 'label': label[:90]})
-
-    # Limit size
-    buttons = buttons[:12]
-# Dedup movie buttons by candidate_id
-    seen = set()
-    mb2: List[Dict[str, Any]] = []
-    for mb in movie_buttons:
-        ci = mb.get('candidate_id')
-        if not isinstance(ci, int) or ci in seen:
-            continue
-        seen.add(ci)
-        mb2.append(mb)
-
-    # Limit size
-    inputs = inputs[:12]
-    mb2 = mb2[:12]
-
     return {
-        'task_intent': {
-            'login': 'login' in task_l or 'sign in' in task_l,
-            'register': 'register' in task_l or 'sign up' in task_l,
-            'contact': 'contact' in task_l or 'get in touch' in task_l,
-            'edit': 'edit' in task_l or 'update' in task_l,
-            'delete': 'delete' in task_l or 'remove' in task_l,
-            'search': 'search' in task_l or 'find' in task_l,
-            'detail': 'show details' in task_l or 'details' in task_l,
-        },
-        'inputs': inputs,
-        'movie_detail_buttons': mb2,
-        'buttons': buttons,
-        'login_form_present': any(i.get('kind') in {'username','email'} for i in inputs) and any(i.get('kind') == 'password' for i in inputs),
-
+        'inputs': inputs[:20],
+        'clickables': [
+            {
+                'candidate_id': i,
+                'tag': c.tag,
+                'label': (c.text or '')[:90],
+                'href': (c.attrs or {}).get('href','') or (c.attrs or {}).get('data-href',''),
+                'context': (c.context or '')[:220],
+                'attrs': {k: str((c.attrs or {}).get(k) or '') for k in ('id','name','type','placeholder','aria-label','role') if (c.attrs or {}).get(k)},
+            }
+            for i, c in sorted(
+                [(i, c) for i, c in enumerate(candidates) if c.tag in {'a','button'}],
+                key=lambda t: len((t[1].context or '').strip()),
+                reverse=True,
+            )
+        ][:25],
     }
 
 def _tokenize(s: str) -> set[str]:
@@ -739,71 +695,119 @@ def _tokenize(s: str) -> set[str]:
 
 
 def _score_candidate(task: str, c: _Candidate) -> float:
-    task_toks = _tokenize(task)
-    label = (c.text or "")
-    ctx = (c.context or "")
-    label_toks = _tokenize(label + " " + ctx)
+    """Structural scoring only.
 
+    Avoids task-specific string heuristics; prefers stable selectors and form-relevant elements.
+    """
     score = 0.0
 
-    # Token overlap.
-    score += 2.0 * len(task_toks & label_toks)
+    if c.tag in {'input', 'textarea', 'select'}:
+        score += 6.0
+    elif c.tag == 'button':
+        score += 4.0
+    elif c.tag == 'a':
+        score += 2.0
 
-    task_l = task.lower()
-    label_l = label.lower()
+    attrs = c.attrs or {}
+    if attrs.get('id'):
+        score += 4.0
+    if attrs.get('name'):
+        score += 2.0
+    if attrs.get('aria-label'):
+        score += 2.0
+    if attrs.get('placeholder'):
+        score += 1.0
+    if attrs.get('href'):
+        score += 1.0
+    if attrs.get('role') in {'button','link'}:
+        score += 0.5
 
-    # Intent keywords.
-    kw_map = {
-        "login": {"login", "log in", "sign in", "signin"},
-        "logout": {"logout", "sign out", "signout"},
-        "register": {"register", "sign up", "signup", "create account"},
-        "search": {"search", "find"},
-        "delete": {"delete", "remove"},
-        "save": {"save", "submit", "confirm", "apply", "update"},
-        "checkout": {"checkout", "pay", "place order"},
-    }
+    if attrs.get('required') is not None and c.tag in {'input','textarea','select'}:
+        score += 2.0
 
-    for intent, kws in kw_map.items():
-        if intent in task_l and any(k in label_l for k in kws):
-            score += 5.0
-
-    # Prefer inputs when task implies typing.
-    if any(k in task_l for k in ["type", "enter", "fill", "write", "password", "email", "username"]):
-        if c.tag in {"input", "textarea"}:
-            score += 3.0
-
-    # Boost obvious form fields/buttons for common multi-step tasks (login/register/contact).
-    blob = (label_l + " " + (ctx or "").lower() + " " + " ".join(f"{k}={v}" for k, v in (c.attrs or {}).items())).lower()
-    if any(k in task_l for k in ["login", "sign in", "log in"]):
-        if c.tag in {"input", "textarea"} and any(k in blob for k in ["user", "username", "email", "password"]):
-            score += 6.0
-        if c.tag in {"button", "a"} and any(k in blob for k in ["sign in", "log in", "submit", "continue"]):
-            score += 4.0
-    if any(k in task_l for k in ["register", "sign up", "signup", "create account"]):
-        if c.tag in {"input", "textarea"} and any(k in blob for k in ["user", "username", "email", "password"]):
-            score += 5.0
-        if c.tag in {"button", "a"} and any(k in blob for k in ["register", "sign up", "create", "submit"]):
-            score += 4.0
-    if "contact" in task_l or "message" in task_l:
-        if c.tag in {"input", "textarea"} and any(k in blob for k in ["name", "email", "message", "subject"]):
-            score += 5.0
-        if c.tag in {"button", "a"} and any(k in blob for k in ["send", "submit", "contact"]):
-            score += 4.0
-
-    # Penalize generic.
-    if c.selector.get("attribute") == "custom" and c.selector.get("value") in {"a", "button", "input"}:
+    if c.selector.get('attribute') == 'custom' and c.selector.get('value') in {'a','button','input','select','textarea'}:
         score -= 2.0
 
-    # Small label penalty.
-    if len(label.strip()) <= 2 and not any(x in task_l for x in ["ok", "yes", "no"]):
-        score -= 2.0
+    if (c.text or '').strip():
+        score += 1.0
+    if (c.context or '').strip():
+        score += 0.5
 
     return score
 
-
 def _rank_candidates(task: str, candidates: List[_Candidate], max_candidates: int) -> List[_Candidate]:
-    ranked = sorted(candidates, key=lambda c: _score_candidate(task, c), reverse=True)
-    return ranked[:max_candidates]
+    scored = [(i, _score_candidate(task, c), c) for i, c in enumerate(candidates)]
+    scored.sort(key=lambda t: (t[1], -t[0]), reverse=True)
+    return [c for _, _, c in scored[:max_candidates]]
+
+
+def _select_candidates_for_llm(task: str, candidates_all: List[_Candidate], current_url: str, max_total: int = 60) -> List[_Candidate]:
+    """Pick a diverse, usable candidate set for the LLM.
+
+    Structural selection only (no task keyword heuristics):
+    - keep all form controls (input/textarea/select)
+    - keep primary buttons
+    - keep a slice of anchors/buttons that have non-trivial surrounding context (cards)
+    """
+    if not candidates_all:
+        return []
+
+    controls = []
+    primaries = []
+    contextual = []
+    others = []
+    for c in candidates_all:
+        # Skip self-links (common in nav) to avoid loops when already on the target page.
+        try:
+            from urllib.parse import urlparse
+            if c.tag == "a":
+                href = str((c.attrs or {}).get("href") or "")
+                if href:
+                    ph = urlparse(href)
+                    pc = urlparse(current_url or "")
+                    if ph.path and pc.path and ph.path == pc.path:
+                        # Same path; let other non-nav elements be considered.
+                        continue
+        except Exception:
+            pass
+        if c.tag in {"input", "textarea", "select"}:
+            controls.append(c)
+            continue
+        if c.tag == "button":
+            primaries.append(c)
+            continue
+        if c.tag in {"a", "button"} and (c.context or "").strip():
+            if len((c.context or "").strip()) >= 40:
+                contextual.append(c)
+            else:
+                others.append(c)
+            continue
+        others.append(c)
+
+    picked = []
+    seen = set()
+    def add_many(arr, limit):
+        nonlocal picked
+        for c in arr:
+            sig = f"{_selector_repr(c.selector)}|{(c.text or "")[:80]}"
+            if sig in seen:
+                continue
+            seen.add(sig)
+            picked.append(c)
+            if len(picked) >= max_total or len(picked) >= limit:
+                return
+
+    # Order: controls first, then contextual card links, then buttons, then the rest.
+    add_many(controls, max_total)
+    if len(picked) < max_total:
+        add_many(contextual, max_total)
+    if len(picked) < max_total:
+        add_many(primaries, max_total)
+    if len(picked) < max_total:
+        add_many(others, max_total)
+
+    return picked[:max_total]
+
 
 
 def _parse_llm_json(content: str) -> Dict[str, Any]:
@@ -894,7 +898,15 @@ def _format_browser_state(*, candidates: List[_Candidate], prev_sig_set: set[str
                     attrs_bits.append(f"{k}={vv}")
             attrs_str = (' | ' + ', '.join(attrs_bits)) if attrs_bits else ''
 
-            lines.append(f"{indent}{star}[{i}]<{c.tag}>{label}</{c.tag}>{attrs_str}")
+            ctx = ''
+            try:
+                if c.tag in {'a','button'} and (c.context or '').strip():
+                    # Help disambiguate repeated CTAs like 'View Details' without site-specific parsing.
+                    ctx = ' :: ' + _norm_ws(c.context)[:120]
+            except Exception:
+                ctx = ''
+
+            lines.append(f"{indent}{star}[{i}]<{c.tag}>{label}</{c.tag}>{attrs_str}{ctx}")
 
         # then render child containers
         for name, child in node.children.items():
@@ -907,20 +919,105 @@ def _format_browser_state(*, candidates: List[_Candidate], prev_sig_set: set[str
     return "\n".join(rendered)
 
 
-def _rewrite_task_for_llm(task: str, relevant_data: Dict[str, Any]) -> str:
-    """Rewrite task text to prefer canonical placeholders from relevant_data.
 
-    This avoids cases where the task string contains ambiguous identifiers (e.g. a numeric web_agent_id)
-    while the actual credentials live in relevant_data.
+
+def _format_credentials_hint(relevant_data: Dict[str, Any]) -> str:
+    """Format credentials from relevant_data for the LLM.
+
+    This is generic and keeps secrets within the evaluator-provided payload.
+    """
+    if not isinstance(relevant_data, dict):
+        return ""
+
+    # Common shapes used by evaluators.
+    for key in ("user_for_login", "user_for_register", "credentials", "user"):
+        u = relevant_data.get(key)
+        if isinstance(u, dict):
+            username = str(u.get("username") or u.get("user") or "").strip()
+            password = str(u.get("password") or "").strip()
+            email = str(u.get("email") or "").strip()
+            bits = []
+            if username:
+                bits.append(f"username={username}")
+            if email:
+                bits.append(f"email={email}")
+            if password:
+                bits.append(f"password={password}")
+            if bits:
+                return "\n".join(bits)
+
+    return ""
+
+def _rewrite_task_for_llm(task: str, relevant_data: Dict[str, Any]) -> str:
+    """Rewrite task text to remove placeholder-like confusion.
+
+    The agent should use actual credential values from CREDENTIALS when provided.
     """
     try:
         if isinstance(relevant_data, dict) and isinstance(relevant_data.get("user_for_login"), dict):
-            return "Log in using <username> and <password>."
+            return "Log in using the provided credentials."
         if isinstance(relevant_data, dict) and isinstance(relevant_data.get("user_for_register"), dict):
-            return "Register a new account using <username>, <email>, and <password>."
+            return "Register a new account using the provided credentials."
     except Exception:
         pass
     return task
+
+def _resolve_url(url: str, base_url: str) -> str:
+    """Resolve possibly-relative URL against a base URL."""
+    try:
+        from urllib.parse import urljoin
+        u = str(url or "").strip()
+        b = str(base_url or "").strip()
+        if not u:
+            return ""
+        # urljoin handles absolute u (returns u unchanged).
+        return urljoin(b, u) if b else u
+    except Exception:
+        return str(url or "").strip()
+
+
+def _path_query(url: str, base_url: str = "") -> tuple[str, str]:
+    try:
+        from urllib.parse import urlparse
+        resolved = _resolve_url(url, base_url)
+        pu = urlparse(resolved or "")
+        return (pu.path or ""), (pu.query or "")
+    except Exception:
+        s = (url or "").strip()
+        return s, ""
+
+
+def _same_path_query(a: str, b: str, *, base_a: str = "", base_b: str = "") -> bool:
+    """Compare (path,query) for URLs, resolving relatives against provided bases."""
+    try:
+        return _path_query(a, base_a) == _path_query(b, base_b)
+    except Exception:
+        return (a or "").strip() == (b or "").strip()
+
+def _preserve_seed_url(target_url: str, current_url: str) -> str:
+    """If current_url has a seed param, ensure target_url keeps it.
+
+    Demo webs are seeded; the validator expects the seed to stay consistent across navigations.
+    """
+    try:
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+        cur = urlparse(current_url or "")
+        tgt = urlparse(target_url or "")
+        cur_seed = (parse_qs(cur.query).get("seed") or [None])[0]
+        if not cur_seed:
+            return target_url
+        q = parse_qs(tgt.query)
+        if (q.get("seed") or [None])[0] == str(cur_seed):
+            return target_url
+        q["seed"] = [str(cur_seed)]
+        new_q = urlencode(q, doseq=True)
+        fixed = tgt._replace(query=new_q)
+        if not fixed.scheme and not fixed.netloc:
+            return urlunparse(("", "", fixed.path, fixed.params, fixed.query, fixed.fragment))
+        return urlunparse(fixed)
+    except Exception:
+        return target_url
+
 
 
 def _llm_decide(
@@ -944,10 +1041,10 @@ def _llm_decide(
         "Return JSON only (no markdown). Think step-by-step privately before answering. "
         "Elements prefixed with '*' in BROWSER_STATE are new since the previous step (URL unchanged). "
         "Do NOT provide detailed chain-of-thought. "
-        "Return a JSON object with keys: action, candidate_id, text, evaluation_previous_goal, memory, next_goal. "
-        "If STRUCTURED STATE indicates login_form_present=true, you MUST type username and password before clicking a sign-in/submit button. "
-        "If you already typed both, then click the sign-in/submit button (prefer attribute selectors). "
-        "action must be one of: click,type,select,scroll_down,scroll_up,done. "
+        "Return a JSON object with keys: action, candidate_id, text, url, evaluation_previous_goal, memory, next_goal. Preserve the current URL query parameters (e.g., seed) unless the task requires changing them. "
+        "If a login/register/contact form is present, usually fill required fields before submitting. "
+        "After you fill the required fields, submit the form (prefer stable attribute selectors). If the task asks you to navigate to a specific item that matches multiple attributes (e.g., rating/duration/year), prefer selecting a card/link whose surrounding context shows those attributes; do not type numeric constraints into a generic search box unless the task explicitly asks to search by text. "
+        "action must be one of: click,type,select,navigate,scroll_down,scroll_up,done. "
         "Constraints: for click/type/select, candidate_id must be an integer index into the BROWSER_STATE list (the number inside [..]). "
         "For type/select, text must be non-empty. "
         "Avoid done unless the task is clearly completed."
@@ -984,7 +1081,7 @@ def _llm_decide(
         f"STEP: {int(step_index)}\n"
         f"URL: {url}\n\n"
         f"CURRENT STATE (TEXT SUMMARY):\n{page_summary}\n\n"
-        + (f"CREDENTIALS (placeholders):\n{credentials_hint}\n\n" if credentials_hint else "")
+        + (f"CREDENTIALS:\n{credentials_hint}\n\n" if credentials_hint else "")
         + (f"DOM DIGEST (STRUCTURED):\n{dom_digest}\n\n" if dom_digest else "")
         + f"STRUCTURED STATE (JSON):\n{json.dumps(structured, ensure_ascii=True)}\n\n"
         + (f"HISTORY (last steps):\n{chr(10).join(history_lines)}\n\n" if history_lines else "")
@@ -996,9 +1093,10 @@ def _llm_decide(
         + "- Return ONE action for this step (no multi-step sequences).\n"
         + "- If you need to do a multi-step procedure (login/register/contact), pick the best next step only.\n"
         + "- Use candidate_id for click/type/select and ensure it is in-range.\n"
+        + "- Use navigate with a full URL when you need to change pages (prefer preserving existing query params like seed).\n"
         + "- For type/select, include non-empty text.\n"
         + "- Provide evaluation_previous_goal, memory, next_goal (each 1 sentence). Do NOT provide detailed chain-of-thought.\n"
-        + "- If credentials are needed, use placeholders: <username>, <password>, <email>.\n"
+        + "- If CREDENTIALS are provided, use those exact values when typing.\n"
     )
 
     model = os.getenv("OPENAI_MODEL", "gpt-5.1")
@@ -1032,11 +1130,21 @@ def _llm_decide(
         except Exception:
             pass
         return obj
-
     def _valid(obj: Dict[str, Any]) -> bool:
         a = (obj.get("action") or "").lower()
-        if a not in {"click", "type", "select", "scroll_down", "scroll_up", "done"}:
+        if a not in {"click", "type", "select", "navigate", "scroll_down", "scroll_up", "done"}:
             return False
+        if a == "navigate":
+            u = obj.get("url")
+            if not isinstance(u, str) or not u.strip():
+                return False
+            try:
+                if _same_path_query(str(u).strip(), str(url).strip(), base_a=str(url).strip(), base_b=""):
+                    return False
+            except Exception:
+                if str(u).strip() == str(url).strip():
+                    return False
+            return True
         if a in {"click", "type", "select"}:
             cid = obj.get("candidate_id")
             if isinstance(cid, str) and cid.isdigit():
@@ -1048,6 +1156,7 @@ def _llm_decide(
                 if not isinstance(t, str) or not t.strip():
                     return False
         return True
+
 
     try:
         obj = _call()
@@ -1165,17 +1274,17 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     html = payload.get("snapshot_html") or ""
     history = payload.get("history") if isinstance(payload.get("history"), list) else None
     relevant_data = payload.get("relevant_data") if isinstance(payload.get("relevant_data"), dict) else {}
+    credentials_hint = _format_credentials_hint(relevant_data)
     page_summary = _summarize_html(html)
     dom_digest = _dom_digest(html)
     task = str(task or "")
-    task_for_llm = task
-    credentials_hint = ""
+    task_for_llm = _rewrite_task_for_llm(task, relevant_data)
 
 
     # Extract + rank candidates before LLM.
     candidates = _extract_candidates(html, max_candidates=80)
     candidates_all = list(candidates)
-    candidates = _rank_candidates(task, candidates, max_candidates=30)
+    candidates = _select_candidates_for_llm(task, candidates_all, current_url=str(url), max_total=60)
 
     if task_id == "check":
         # Permit repo self-checks without requiring OPENAI credentials.
@@ -1185,6 +1294,14 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
 
 
     st = _TASK_STATE.get(task_id) if task_id else None
+    effective_url = str(url)
+    try:
+        if isinstance(st, dict):
+            eu = str(st.get("effective_url") or "").strip()
+            if eu:
+                effective_url = eu
+    except Exception:
+        effective_url = str(url)
     extra_hint = ""
     prev_sig_set = None
     try:
@@ -1213,7 +1330,7 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
             task_id=task_id,
             task=task_for_llm,
             step_index=step_index,
-            url=url,
+            url=effective_url,
             candidates=candidates,
             page_summary=page_summary,
             dom_digest=dom_digest,
@@ -1279,6 +1396,26 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         cid = int(cid)
 
 
+    if action == "navigate":
+        nav_url_raw = str(decision.get("url") or "").strip()
+        if not nav_url_raw:
+            return _resp([{"type": "WaitAction", "time_seconds": 1.0}], {"decision": "navigate_missing_url"})
+
+        nav_url = _resolve_url(nav_url_raw, effective_url or str(url))
+
+        # If the evaluator reports a stale URL, track an effective URL ourselves to prevent navigate loops.
+        if _same_path_query(nav_url, effective_url, base_a=effective_url, base_b=""):
+            _update_task_state(task_id, str(url), "navigate_same_url_scroll")
+            return _resp([{ "type": "ScrollAction", "down": True, "up": False}], {"decision": "scroll_override"})
+
+        _update_task_state(task_id, str(url), f"navigate:{nav_url}")
+        try:
+            if task_id and isinstance(_TASK_STATE.get(task_id), dict):
+                _TASK_STATE[task_id]["effective_url"] = str(nav_url)
+        except Exception:
+            pass
+        return _resp([{"type": "NavigateAction", "url": nav_url, "go_back": False, "go_forward": False}], {"decision": "navigate", "url": nav_url, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
+
     if action in {"scroll_down", "scroll_up"}:
         _update_task_state(task_id, str(url), f"{action}")
         return _resp([{"type": "ScrollAction", "down": action == "scroll_down", "up": action == "scroll_up"}], {"decision": decision.get("action"), "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
@@ -1299,6 +1436,26 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
 
         if action == "click":
             selector = c.click_selector()
+            # Preserve seed across internal navigations when clicking href-based links.
+            try:
+                if isinstance(selector, dict) and selector.get("type") == "attributeValueSelector" and selector.get("attribute") == "href":
+                    href = str(selector.get("value") or "")
+                    fixed = _preserve_seed_url(href, effective_url or str(url))
+                    if fixed and fixed != href:
+                        fixed_abs = _resolve_url(fixed, effective_url or str(url))
+                        # Avoid endless navigate loops if this would keep us on the same page.
+                        if _same_path_query(fixed_abs, effective_url, base_a=effective_url, base_b=""):
+                            _update_task_state(task_id, str(url), "navigate_seed_fix_same_url_scroll")
+                            return _resp([{ "type": "ScrollAction", "down": True, "up": False}], {"decision": "scroll_override"})
+                        _update_task_state(task_id, str(url), f"navigate_seed_fix:{fixed_abs}")
+                        try:
+                            if task_id and isinstance(_TASK_STATE.get(task_id), dict):
+                                _TASK_STATE[task_id]["effective_url"] = str(fixed_abs)
+                        except Exception:
+                            pass
+                        return _resp([{ "type": "NavigateAction", "url": fixed_abs, "go_back": False, "go_forward": False}], {"decision": "navigate", "url": fixed_abs, "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
+            except Exception:
+                pass
             _update_task_state(task_id, str(url), f"click:{_selector_repr(selector)}")
             return _resp([{"type": "ClickAction", "selector": selector}], {"decision": "click", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
 
@@ -1313,7 +1470,7 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
                 raise HTTPException(status_code=400, detail="select action missing text")
             selector = c.type_selector()
             _update_task_state(task_id, str(url), f"select:{_selector_repr(selector)}")
-            return _resp([{"type": "SelectDropDownOptionAction", "selector": selector, "text": str(text)}], {"decision": "select", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
+            return _resp([{"type": "SelectDropDownOptionAction", "selector": selector, "text": str(text), "timeout_ms": int(os.getenv("AGENT_SELECT_TIMEOUT_MS", "4000"))}], {"decision": "select", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
 
     if candidates and step_index < 5:
         selector = candidates[0].click_selector()
