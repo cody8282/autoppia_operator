@@ -116,6 +116,7 @@ async def run_evaluation(
     temperature: float = 0.2,
     distinct_use_cases: bool = False,
     out_path: str | None = None,
+    task_cache: str | None = None,
 ):
     # Re-load .env here as a guard: some imported modules may mutate env vars.
     try:
@@ -127,6 +128,9 @@ async def run_evaluation(
         pass
 
     provider_s = str(provider or os.getenv('LLM_PROVIDER') or 'openai').strip().lower()
+
+    cache_path = Path(task_cache).resolve() if task_cache else TASK_CACHE
+
 
     if provider_s == 'anthropic':
         api_key = os.getenv('ANTHROPIC_API_KEY')
@@ -149,6 +153,7 @@ async def run_evaluation(
     logger.info(f"  Provider:   {provider_s}")
     logger.info(f"  Model:      {model}")
     logger.info(f"  Tasks:      {num_tasks}")
+    logger.info(f"  Task cache: {cache_path}")
     logger.info(f"  Max steps:  {max_steps}")
     logger.info(f"  Use case:   {use_case or 'all'}")
     logger.info(f"  Web proj:   {web_project_id or 'all'}")
@@ -161,7 +166,7 @@ async def run_evaluation(
     load_limit = num_tasks
     if distinct_use_cases:
         load_limit = max(500, num_tasks * 20)
-    tasks = load_tasks(use_case=use_case, web_project_id=web_project_id, task_id=task_id, limit=load_limit)
+    tasks = load_tasks(cache_path=cache_path, use_case=use_case, web_project_id=web_project_id, task_id=task_id, limit=load_limit)
     logger.info(f"Loaded {len(tasks)} tasks")
 
     if not tasks:
@@ -634,6 +639,7 @@ def main():
     parser.add_argument("--repeat", type=int, default=1, help="Repeat each selected task N times")
     parser.add_argument("--temperature", type=float, default=0.2, help="LLM temperature")
     parser.add_argument('--out', default=None, help='Output JSON path (default: data/eval_results.json)')
+    parser.add_argument('--task-cache', default=None, help='Task cache JSON path')
     parser.add_argument("--distinct-use-cases", action="store_true", help="Pick tasks with distinct use cases")
     args = parser.parse_args()
 
@@ -651,6 +657,7 @@ def main():
             temperature=args.temperature,
             distinct_use_cases=bool(args.distinct_use_cases),
             out_path=args.out,
+            task_cache=args.task_cache,
         )
     )
 

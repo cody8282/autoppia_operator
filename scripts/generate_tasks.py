@@ -61,15 +61,32 @@ def main() -> None:
     operator_dir = Path(__file__).resolve().parents[1]
 
     parser = argparse.ArgumentParser(description="Generate and cache tasks via autoppia_iwa.")
-    parser.add_argument("--project-id", default="autocinema", help="Web project id (e.g. autocinema)")
+    parser.add_argument(
+        "--project-id",
+        action="append",
+        default=[],
+        help="Web project id (repeatable). Example: --project-id autocinema --project-id autobooks",
+    )
+    parser.add_argument(
+        "--project-ids",
+        default=None,
+        help="Comma-separated project ids (alternative to repeating --project-id)",
+    )
     parser.add_argument("--prompts-per-use-case", type=int, default=1, help="Prompt variants per use case")
     parser.add_argument("--dynamic", action="store_true", help="Enable dynamic task generation")
     parser.add_argument(
         "--out",
-        default=str(operator_dir.parent / "autoppia_rl" / "data" / "task_cache" / "autoppia_cinema_tasks.json"),
+        default=str(operator_dir / "data" / "task_cache" / "tasks_cache.json"),
         help="Output cache JSON path",
     )
     args = parser.parse_args()
+
+    project_ids: list[str] = []
+    if args.project_ids:
+        project_ids.extend([p.strip() for p in str(args.project_ids).split(',') if p.strip()])
+    project_ids.extend([p.strip() for p in (args.project_id or []) if p.strip()])
+    if not project_ids:
+        project_ids = ["autocinema"]
 
     _load_operator_env(operator_dir)
 
@@ -79,11 +96,30 @@ def main() -> None:
         raise SystemExit("OPENAI_API_KEY missing in environment (check autoppia_operator/.env).")
     print(f"OPENAI_API_KEY=set fpr={k_fpr}")
 
-    payload = asyncio.run(_generate(args.project_id, args.prompts_per_use_case, bool(args.dynamic)))
+    async def _run() -> dict:
+        all_tasks = []
+        projects = []
+        for pid in project_ids:
+            payload = await _generate(pid, int(args.prompts_per_use_case), bool(args.dynamic))
+            projects.append({
+                'project_id': payload.get('project_id'),
+                'project_name': payload.get('project_name'),
+                'num_tasks': len(payload.get('tasks') or []),
+            })
+            all_tasks.extend(payload.get('tasks') or [])
+
+        return {
+            'timestamp': datetime.now().isoformat(),
+            'projects': projects,
+            'tasks': all_tasks,
+        }
+
+    payload = asyncio.run(_run())
+
     out_path = Path(args.out).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    print(f"Wrote {len(payload['tasks'])} tasks -> {out_path}")
+    out_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    print(f"Wrote {len(payload['tasks'])} tasks from {len(payload['projects'])} projects -> {out_path}")
 
     if not payload["tasks"]:
         raise SystemExit("Generated 0 tasks (check OPENAI key/model access and generation logs).")
