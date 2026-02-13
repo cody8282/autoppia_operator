@@ -69,7 +69,11 @@ class OpenAIGateway:
                 try:
                     j = e.response.json()
                     err = j.get("error", {}) if isinstance(j, dict) else {}
-                    detail = f"type={err.get('type')} code={err.get('code')}"
+                    msg = str(err.get("message") or "")
+                    msg = msg.replace("\n", " ").strip()
+                    if len(msg) > 160:
+                        msg = msg[:160] + "..."
+                    detail = f"type={err.get('type')} code={err.get('code')} message={msg}"
                 except Exception:
                     detail = (e.response.text or "")[:200]
                 raise RuntimeError(f"OpenAI error ({e.response.status_code}): {detail}") from e
@@ -158,6 +162,10 @@ class AnthropicGateway:
 
 
 _openai = OpenAIGateway()
+_chutes = OpenAIGateway(
+    base_url=(os.getenv("CHUTES_BASE_URL") or "https://llm.chutes.ai/v1"),
+    api_key=(os.getenv("CHUTES_API_KEY") or None),
+)
 _anthropic = AnthropicGateway()
 
 
@@ -181,6 +189,16 @@ def openai_chat_completions(
 
     provider = _llm_provider()
     m = str(model)
+
+    if provider == "chutes":
+        return _chutes.chat_completions(task_id=task_id, body={
+            "model": m,
+            "messages": messages,
+            # Keep compatible defaults; some OpenAI-compatible providers may not
+            # support response_format.
+            "temperature": float(temperature),
+            "max_tokens": int(max_tokens),
+        })
 
     if provider == 'anthropic':
         # Convert OpenAI-style messages into Anthropic messages+system.

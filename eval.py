@@ -105,7 +105,7 @@ def inject_seed(task: Task, seed: int | None = None) -> tuple[Task, int]:
 
 async def run_evaluation(
     provider: str = "openai",
-    model: str = "gpt-5.1",
+    model: str = "gpt-5.2",
     num_tasks: int = 20,
     max_steps: int = 15,
     use_case: str | None = None,
@@ -629,7 +629,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="Autoppia Operator - LLM Agent Evaluation")
     parser.add_argument('--provider', default='openai', help='LLM provider: openai|anthropic')
-    parser.add_argument("--model", default="gpt-5.1", help="Model name")
+    parser.add_argument("--model", default="gpt-5.2", help="Model name")
     parser.add_argument("--num-tasks", type=int, default=20, help="Number of tasks to evaluate")
     parser.add_argument("--max-steps", type=int, default=15, help="Max steps per episode")
     parser.add_argument("--use-case", default=None, help="Filter by use case (e.g. LOGIN)")

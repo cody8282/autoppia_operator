@@ -786,10 +786,35 @@ def _select_candidates_for_llm(task: str, candidates_all: List[_Candidate], curr
 
 
 def _parse_llm_json(content: str) -> Dict[str, Any]:
+    if not isinstance(content, str):
+        raise ValueError(f"LLM returned non-text content type={type(content)}")
+
+    raw = content.strip()
+    # Common case: pure JSON.
     try:
-        obj = json.loads(content)
-    except Exception as e:
-        raise ValueError(f"LLM returned non-JSON: {content[:200]}") from e
+        obj = json.loads(raw)
+    except Exception:
+        # Best-effort recovery: strip code-fences and/or extract the first JSON object.
+        s = raw
+        if s.startswith("```"):
+            # Remove leading/trailing fenced blocks like ```json ... ```
+            s2 = s
+            if s2.startswith("```json"):
+                s2 = s2[len("```json") :]
+            elif s2.startswith("```"):
+                s2 = s2[len("```") :]
+            if s2.endswith("```"):
+                s2 = s2[: -len("```")]
+            s = s2.strip()
+        start = s.find("{")
+        end = s.rfind("}")
+        if 0 <= start < end:
+            try:
+                obj = json.loads(s[start : end + 1])
+            except Exception as e:
+                raise ValueError(f"LLM returned non-JSON: {raw[:200]}") from e
+        else:
+            raise ValueError(f"LLM returned non-JSON: {raw[:200]}")
     if not isinstance(obj, dict):
         raise ValueError("LLM returned non-object JSON")
     return obj
@@ -1074,7 +1099,7 @@ def _llm_decide(
         + "- If CREDENTIALS are provided, use those exact values when typing.\n"
     )
 
-    model = os.getenv("OPENAI_MODEL", "gpt-5.1")
+    model = os.getenv("OPENAI_MODEL", "gpt-5.2")
     temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
     max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "350"))
 
