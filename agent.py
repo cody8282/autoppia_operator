@@ -11,6 +11,9 @@ from html.parser import HTMLParser
 
 from fastapi import Body, FastAPI, HTTPException
 
+# Default this branch to the Chutes provider (OpenAI-compatible).
+os.environ.setdefault("LLM_PROVIDER", "chutes")
+
 from llm_gateway import openai_chat_completions, is_sandbox_gateway_base_url
 
 try:
@@ -1099,7 +1102,7 @@ def _llm_decide(
         + "- If CREDENTIALS are provided, use those exact values when typing.\n"
     )
 
-    model = os.getenv("OPENAI_MODEL", "gpt-5.2")
+    model = os.getenv("OPENAI_MODEL", "deepseek-ai/DeepSeek-V3-0324")
     temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
     max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "350"))
 
