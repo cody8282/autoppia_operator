@@ -796,7 +796,7 @@ def _llm_decide(
         + "- If credentials are needed, use placeholders: <username>, <password>, <email>.\n"
     )
 
-    model = os.getenv("OPENAI_MODEL", "gpt-5")
+    model = os.getenv("OPENAI_MODEL", "gpt-5.1")
     temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
     max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "350"))
 
