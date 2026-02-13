@@ -764,7 +764,9 @@ def _select_candidates_for_llm(task: str, candidates_all: List[_Candidate], curr
     def add_many(arr, limit):
         nonlocal picked
         for c in arr:
-            sig = f"{_selector_repr(c.selector)}|{(c.text or "")[:80]}"
+            # NOTE: f-string expressions cannot contain unescaped quotes that match the
+            # f-string delimiter. Use single quotes inside the expression.
+            sig = f"{_selector_repr(c.selector)}|{(c.text or '')[:80]}"
             if sig in seen:
                 continue
             seen.add(sig)
