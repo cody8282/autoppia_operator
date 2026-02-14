@@ -105,6 +105,7 @@ class _Candidate:
         *,
         text_selector: Optional[Dict[str, Any]] = None,
         context: str = "",
+        context_raw: str = "",
         group: str = "",
         container_chain: list[str] | None = None,
     ):
@@ -114,6 +115,7 @@ class _Candidate:
         self.tag = tag
         self.attrs = attrs
         self.context = context
+        self.context_raw = context_raw
         self.group = group
         self.container_chain = container_chain or []
 
@@ -276,6 +278,68 @@ def _extract_label_from_bs4(soup, el, attr_map: Dict[str, str]) -> str:
 
 
 
+
+
+
+def _pick_context_container_bs4(el) -> object | None:
+    """Pick a small, card-like container for an element.
+
+    Structural and generic: aims to capture per-item context (e.g., list rows/cards) rather than whole panels.
+    """
+    try:
+        candidates = []
+        cur = el
+        for _depth in range(8):
+            if cur is None:
+                break
+            try:
+                cur = cur.parent
+            except Exception:
+                break
+            if cur is None:
+                break
+            tag = str(getattr(cur, "name", "") or "")
+            if tag not in {"li", "tr", "article", "section", "div", "td"}:
+                continue
+
+            try:
+                txt_raw = cur.get_text("\n", strip=True)
+            except Exception:
+                txt_raw = ""
+            L = len(txt_raw or "")
+            if L <= 0:
+                continue
+
+            try:
+                n_inter = len(cur.find_all(["a", "button", "input", "select", "textarea"]))
+            except Exception:
+                n_inter = 0
+
+            candidates.append((L, n_inter, cur))
+
+        if not candidates:
+            return None
+
+        best = None
+        best_key = None
+        for L, n_inter, node in candidates:
+            if not (50 <= L <= 900):
+                continue
+            if n_inter <= 0 or n_inter > 12:
+                continue
+            key = (L, n_inter)
+            if best is None or key < (best_key or key):
+                best = node
+                best_key = key
+        if best is not None:
+            return best
+
+        candidates.sort(key=lambda t: (t[0], t[1]))
+        return candidates[0][2]
+    except Exception:
+        return None
+
+
 def _container_chain_from_el(soup, el) -> list[str]:
     """Return a short container path for an element to render a simplified DOM tree."""
     chain: list[str] = []
@@ -393,7 +457,7 @@ def _extract_candidates_bs4(html: str, *, max_candidates: int) -> List[_Candidat
         context_raw = ""
         title = ""
         try:
-            parent = el.find_parent(["li", "tr", "article", "section", "div"])
+            parent = _pick_context_container_bs4(el) or el.find_parent(["li", "tr", "article", "section", "div"])
             if parent is not None:
                 # Preserve line breaks for card-like metadata extraction.
                 context_raw = parent.get_text("\n", strip=True)
@@ -482,7 +546,7 @@ def _extract_candidates_bs4(html: str, *, max_candidates: int) -> List[_Candidat
             continue
         seen.add(sig)
 
-        out.append(_Candidate(primary, label, tag, attr_map, text_selector=text_sel, context=context, group=group, container_chain=container_chain))
+        out.append(_Candidate(primary, label, tag, attr_map, text_selector=text_sel, context=context, context_raw=context_raw, group=group, container_chain=container_chain))
         if len(out) >= max_candidates:
             break
 
@@ -923,48 +987,6 @@ def _format_browser_state(*, candidates: List[_Candidate], prev_sig_set: set[str
 
 
 
-
-def _format_credentials_hint(relevant_data: Dict[str, Any]) -> str:
-    """Format credentials from relevant_data for the LLM.
-
-    This is generic and keeps secrets within the evaluator-provided payload.
-    """
-    if not isinstance(relevant_data, dict):
-        return ""
-
-    # Common shapes used by evaluators.
-    for key in ("user_for_login", "user_for_register", "credentials", "user"):
-        u = relevant_data.get(key)
-        if isinstance(u, dict):
-            username = str(u.get("username") or u.get("user") or "").strip()
-            password = str(u.get("password") or "").strip()
-            email = str(u.get("email") or "").strip()
-            bits = []
-            if username:
-                bits.append(f"username={username}")
-            if email:
-                bits.append(f"email={email}")
-            if password:
-                bits.append(f"password={password}")
-            if bits:
-                return "\n".join(bits)
-
-    return ""
-
-def _rewrite_task_for_llm(task: str, relevant_data: Dict[str, Any]) -> str:
-    """Rewrite task text to remove placeholder-like confusion.
-
-    The agent should use actual credential values from CREDENTIALS when provided.
-    """
-    try:
-        if isinstance(relevant_data, dict) and isinstance(relevant_data.get("user_for_login"), dict):
-            return "Log in using the provided credentials."
-        if isinstance(relevant_data, dict) and isinstance(relevant_data.get("user_for_register"), dict):
-            return "Register a new account using the provided credentials."
-    except Exception:
-        pass
-    return task
-
 def _resolve_url(url: str, base_url: str) -> str:
     """Resolve possibly-relative URL against a base URL."""
     try:
@@ -1212,17 +1234,166 @@ def _tool_list_candidates(*, candidates: List["_Candidate"], max_n: int = 80) ->
     return {"ok": True, "count": len(candidates or []), "candidates": out}
 
 
+def _tool_list_links(
+    *,
+    html: str,
+    base_url: str,
+    max_links: int = 60,
+    context_max: int = 260,
+    href_regex: str = "",
+    text_regex: str = "",
+) -> Dict[str, Any]:
+    """Extract links (href) and nearby container text.
+
+    Generic tool that helps the LLM choose a navigation target without depending on a candidate_id.
+    """
+    if BeautifulSoup is None:
+        return {"ok": False, "error": "bs4 not available"}
+
+    try:
+        soup = BeautifulSoup(html or "", "lxml")
+    except Exception as e:
+        return {"ok": False, "error": f"parse failed: {str(e)[:160]}"}
+
+    href_pat = None
+    text_pat = None
+    try:
+        if href_regex:
+            href_pat = re.compile(str(href_regex), re.I)
+        if text_regex:
+            text_pat = re.compile(str(text_regex), re.I)
+    except Exception as e:
+        return {"ok": False, "error": f"invalid regex: {str(e)[:160]}"}
+
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for a in soup.select("a[href]"):
+        try:
+            href = str(a.get("href") or "").strip()
+            if not href or href.lower().startswith("javascript:"):
+                continue
+            if href_pat and not href_pat.search(href):
+                continue
+
+            text = _norm_ws(a.get_text(" ", strip=True))
+            if not text:
+                text = _norm_ws(str(a.get("aria-label") or "") or "")
+            if text_pat and not text_pat.search(text):
+                continue
+
+            container = _pick_context_container_bs4(a)
+            ctx_raw = ""
+            if container is not None:
+                try:
+                    ctx_raw = container.get_text("\n", strip=True)
+                except Exception:
+                    ctx_raw = ""
+            ctx = _safe_truncate(_norm_ws(ctx_raw) if ctx_raw else "", int(context_max or 0))
+
+            resolved = _resolve_url(href, str(base_url or ""))
+            resolved = _preserve_seed_url(resolved, str(base_url or ""))
+
+            sig = (resolved or href) + "|" + (text or "")
+            if sig in seen:
+                continue
+            seen.add(sig)
+
+            out.append({
+                "href": _safe_truncate(href, 260),
+                "url": _safe_truncate(resolved, 320),
+                "text": _safe_truncate(text, 160),
+                "context": ctx,
+            })
+            if len(out) >= int(max_links or 0):
+                break
+        except Exception:
+            continue
+
+    return {"ok": True, "count": len(out), "links": out}
+
+
+def _tool_list_cards(*, candidates: List["_Candidate"], max_cards: int = 25, max_text: int = 900, max_actions_per_card: int = 6) -> Dict[str, Any]:
+    """Group candidates into card-like clusters using their extracted container context.
+
+    Generic: clusters clickables (a/button or href-selectable) by context_raw/context. Returns surrounding text plus actions.
+    """
+    groups: dict[str, dict[str, Any]] = {}
+
+    for i, c in enumerate(candidates or []):
+        try:
+            # Only cluster around clickables to avoid dumping huge filter panels.
+            if c.tag not in {"a", "button"}:
+                sel = c.click_selector()
+                if not (isinstance(sel, dict) and sel.get("type") == "attributeValueSelector" and str(sel.get("attribute") or "") == "href"):
+                    continue
+
+            key = (c.context_raw or c.context or "").strip()
+            if not key:
+                key = "(no_context)"
+
+            g = groups.get(key)
+            if g is None:
+                facts = []
+                try:
+                    lines = [ln.strip() for ln in str(key or '').splitlines() if ln.strip()]
+                    facts = [ln for ln in lines if any(ch.isdigit() for ch in ln)][:6]
+                except Exception:
+                    facts = []
+                g = {"card_text": _safe_truncate(key, int(max_text or 0)), "card_facts": facts, "candidate_ids": [], "actions": []}
+                groups[key] = g
+
+            g["candidate_ids"].append(i)
+            if len(g["actions"]) < int(max_actions_per_card or 0):
+                sel = c.click_selector()
+                href = ""
+                try:
+                    if isinstance(sel, dict) and sel.get("type") == "attributeValueSelector" and str(sel.get("attribute") or "") == "href":
+                        href = str(sel.get("value") or "").strip()
+                except Exception:
+                    href = ""
+
+                g["actions"].append({
+                    "candidate_id": i,
+                    "tag": c.tag,
+                    "text": _safe_truncate(c.text or "", 140),
+                    "click": _selector_repr(sel),
+                    "href": _safe_truncate(href, 240) if href else "",
+                })
+        except Exception:
+            continue
+
+    ranked = []
+    for _k, g in groups.items():
+        txt = str(g.get("card_text") or "")
+        n_actions = len(g.get("actions") or [])
+        L = len(txt)
+        penalty = 0
+        if L < 40:
+            penalty += 400
+        if L > 900:
+            penalty += min(1200, L - 900)
+        score = (1000 - penalty + min(L, 700), n_actions)
+        ranked.append((score, g))
+
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    cards = [g for _, g in ranked[: int(max_cards or 0)]]
+    return {"ok": True, "count": len(cards), "cards": cards}
+
+
 _TOOL_REGISTRY = {
     "search_text": _tool_search_text,
     "visible_text": _tool_visible_text,
     "css_select": _tool_css_select,
     "xpath_select": _tool_xpath_select,
     "extract_forms": _tool_extract_forms,
+    "list_links": _tool_list_links,
     "list_candidates": _tool_list_candidates,
+    "list_cards": _tool_list_cards,
 }
 
 
-def _run_tool(tool: str, args: Dict[str, Any], *, html: str, candidates: List["_Candidate"]) -> Dict[str, Any]:
+def _run_tool(tool: str, args: Dict[str, Any], *, html: str, url: str, candidates: List["_Candidate"]) -> Dict[str, Any]:
     t = str(tool or "").strip()
     fn = _TOOL_REGISTRY.get(t)
     if fn is None:
@@ -1232,6 +1403,10 @@ def _run_tool(tool: str, args: Dict[str, Any], *, html: str, candidates: List["_
     # Inject shared state for tools that need it.
     if t == "list_candidates":
         return fn(candidates=candidates, **{k: v for k, v in a.items() if k in {"max_n"}})
+    if t == "list_cards":
+        return fn(candidates=candidates, **{k: v for k, v in a.items() if k in {"max_cards", "max_text", "max_actions_per_card"}})
+    if t == "list_links":
+        return fn(html=html, base_url=str(url or ""), **{k: v for k, v in a.items() if k in {"max_links", "context_max", "href_regex", "text_regex"}})
     if t in {"search_text", "visible_text", "css_select", "xpath_select", "extract_forms"}:
         return fn(html=html, **a)
 
@@ -1248,7 +1423,6 @@ def _llm_decide(
     dom_digest: str,
     html_snapshot: str,
     history: List[Dict[str, Any]] | None,
-    credentials_hint: str = "",
     extra_hint: str = "",
     state_delta: str = "",
     prev_sig_set: set[str] | None = None,
@@ -1256,16 +1430,20 @@ def _llm_decide(
     browser_state = _format_browser_state(candidates=candidates, prev_sig_set=prev_sig_set)
     system_msg = (
         "You are a web automation agent. Given the task, step number, state, history, and state diff, choose ONE next action. "
-        "Return JSON only (no markdown). Think step-by-step privately before answering. "
-        "Elements prefixed with '*' in BROWSER_STATE are new since the previous step (URL unchanged). "
+        "Return JSON only (no markdown). "
         "Do NOT provide detailed chain-of-thought. "
-        "Return a JSON object with keys: action, candidate_id, text, url, evaluation_previous_goal, memory, next_goal. Preserve the current URL query parameters (e.g., seed) unless the task requires changing them. "
-        "If a login/register/contact form is present, usually fill required fields before submitting. "
-        "After you fill the required fields, submit the form (prefer stable attribute selectors). If the task asks you to navigate to a specific item that matches multiple attributes (e.g., rating/duration/year), prefer selecting a card/link whose surrounding context shows those attributes; do not type numeric constraints into a generic search box unless the task explicitly asks to search by text. "
-        "action must be one of: click,type,select,navigate,scroll_down,scroll_up,done. ""You may optionally request an HTML inspection tool instead of an action by returning JSON with keys: tool, args. ""Available tools: search_text(args: {query, regex?, case_sensitive?, max_matches?, context_chars?}); visible_text(args: {max_chars?}); css_select(args: {selector, max_nodes?}); xpath_select(args: {xpath, max_nodes?}); extract_forms(args: {max_forms?, max_inputs?}); list_candidates(args: {max_n?}). ""After a tool result is returned, pick the next action. Prefer at most 2 tool calls per step. "
+        "Return a JSON object with keys: action, candidate_id, text, url, evaluation_previous_goal, memory, next_goal. "
+        "Preserve the current URL query parameters (e.g., seed) unless the task requires changing them. "
+        "action must be one of: click,type,select,navigate,scroll_down,scroll_up,done. "
         "Constraints: for click/type/select, candidate_id must be an integer index into the BROWSER_STATE list (the number inside [..]). "
-        "For type/select, text must be non-empty. "
-        "Avoid done unless the task is clearly completed."
+        "For type/select, text must be non-empty. Avoid done unless the task is clearly completed. "
+        "If the task requires choosing a specific item that matches multiple attributes, first inspect the page using list_cards or list_links, then click/navigate to the matching item. "
+        "You may optionally request an HTML inspection tool instead of an action by returning JSON with keys: tool, args. "
+        "Available tools: search_text(args: {query, regex?, case_sensitive?, max_matches?, context_chars?}); "
+        "visible_text(args: {max_chars?}); css_select(args: {selector, max_nodes?}); xpath_select(args: {xpath, max_nodes?}); "
+        "extract_forms(args: {max_forms?, max_inputs?}); list_links(args: {max_links?, context_max?, href_regex?, text_regex?}); "
+        "list_candidates(args: {max_n?}); list_cards(args: {max_cards?, max_text?, max_actions_per_card?}). "
+        "After a tool result is returned, pick the next action. Prefer at most 2 tool calls per step."
     )
 
     history_lines: List[str] = []
@@ -1282,6 +1460,17 @@ def _llm_decide(
     hint = _history_hint(history)
 
     structured = _structured_hints(task, candidates)
+
+    cards_preview = ""
+    try:
+        cards_obj = _tool_list_cards(candidates=candidates, max_cards=12, max_text=420, max_actions_per_card=3)
+        if isinstance(cards_obj, dict) and cards_obj.get("ok") and cards_obj.get("cards"):
+            cards_preview = json.dumps(cards_obj.get("cards"), ensure_ascii=True)
+            # Keep the prompt bounded.
+            if len(cards_preview) > 2400:
+                cards_preview = cards_preview[:2397] + "..."
+    except Exception:
+        cards_preview = ""
     agent_mem = ""
     try:
         st2 = _TASK_STATE.get(task_id) if task_id else None
@@ -1299,8 +1488,8 @@ def _llm_decide(
         f"STEP: {int(step_index)}\n"
         f"URL: {url}\n\n"
         f"CURRENT STATE (TEXT SUMMARY):\n{page_summary}\n\n"
-        + (f"CREDENTIALS:\n{credentials_hint}\n\n" if credentials_hint else "")
         + (f"DOM DIGEST (STRUCTURED):\n{dom_digest}\n\n" if dom_digest else "")
+        + (f"CARDS (GROUPED CLICKABLE CONTEXTS JSON):\n{cards_preview}\n\n" if cards_preview else "")
         + f"STRUCTURED STATE (JSON):\n{json.dumps(structured, ensure_ascii=True)}\n\n"
         + (f"HISTORY (last steps):\n{chr(10).join(history_lines)}\n\n" if history_lines else "")
         + (f"STATE HINT: {extra_hint}\n\n" if extra_hint else "")
@@ -1406,7 +1595,7 @@ def _llm_decide(
             args = obj.get("args") if isinstance(obj.get("args"), dict) else {}
             tool_calls += 1
             try:
-                result = _run_tool(tool, args, html=html_snapshot, candidates=candidates)
+                result = _run_tool(tool, args, html=html_snapshot, url=str(url), candidates=candidates)
             except Exception as e:
                 result = {"ok": False, "error": str(e)[:200]}
 
@@ -1541,12 +1730,10 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     return_metrics = os.getenv("AGENT_RETURN_METRICS", "0").lower() in {"1", "true", "yes"}
     html = payload.get("snapshot_html") or ""
     history = payload.get("history") if isinstance(payload.get("history"), list) else None
-    relevant_data = payload.get("relevant_data") if isinstance(payload.get("relevant_data"), dict) else {}
-    credentials_hint = _format_credentials_hint(relevant_data)
     page_summary = _summarize_html(html)
     dom_digest = _dom_digest(html)
     task = str(task or "")
-    task_for_llm = _rewrite_task_for_llm(task, relevant_data)
+    task_for_llm = task
 
 
     # Extract + rank candidates before LLM.
@@ -1604,7 +1791,6 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
             dom_digest=dom_digest,
             html_snapshot=html,
             history=history,
-            credentials_hint=credentials_hint,
             extra_hint=extra_hint,
             state_delta=state_delta,
             prev_sig_set=prev_sig_set,
