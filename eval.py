@@ -104,8 +104,8 @@ def inject_seed(task: Task, seed: int | None = None) -> tuple[Task, int]:
 # ── Main evaluation loop ────────────────────────────────────────
 
 async def run_evaluation(
-    provider: str = "openai",
-    model: str = "gpt-5.2",
+    provider: str = "chutes",
+    model: str = "deepseek-ai/DeepSeek-V3-0324",
     num_tasks: int = 20,
     max_steps: int = 15,
     use_case: str | None = None,
@@ -628,8 +628,8 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Autoppia Operator - LLM Agent Evaluation")
-    parser.add_argument('--provider', default='openai', help='LLM provider: openai|anthropic')
-    parser.add_argument("--model", default="gpt-5.2", help="Model name")
+    parser.add_argument('--provider', default='chutes', help='LLM provider: openai|chutes|anthropic')
+    parser.add_argument("--model", default="deepseek-ai/DeepSeek-V3-0324", help="Model name")
     parser.add_argument("--num-tasks", type=int, default=20, help="Number of tasks to evaluate")
     parser.add_argument("--max-steps", type=int, default=15, help="Max steps per episode")
     parser.add_argument("--use-case", default=None, help="Filter by use case (e.g. LOGIN)")
