@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import json
 import os
 import re
+from loguru import logger
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from html.parser import HTMLParser
@@ -21,10 +22,14 @@ try:
     from autoppia_iwa.src.data_generation.tasks.classes import Task
     from autoppia_iwa.src.execution.actions.base import BaseAction
     import autoppia_iwa.src.execution.actions.actions  # noqa: F401
+    _AUTOPPIA_IWA_IMPORT_OK = True
+    _AUTOPPIA_IWA_IMPORT_ERROR = ""
 except Exception:  # pragma: no cover
     IWebAgent = object  # type: ignore[assignment]
     Task = Any  # type: ignore[assignment]
     BaseAction = Any  # type: ignore[assignment]
+    _AUTOPPIA_IWA_IMPORT_OK = False
+    _AUTOPPIA_IWA_IMPORT_ERROR = "autoppia_iwa import failed in miner runtime"
 
 try:
     from bs4 import BeautifulSoup  # type: ignore
@@ -33,6 +38,28 @@ except Exception:  # pragma: no cover
 
 
 app = FastAPI(title="Autoppia Web Agent API")
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+_LOG_DECISIONS = _env_bool("AGENT_LOG_DECISIONS", False)
+_LOG_ERRORS = _env_bool("AGENT_LOG_ERRORS", False)
+
+
+def _log_trace(message: str) -> None:
+    if _LOG_DECISIONS:
+        logger.info(f"[AGENT_TRACE] {message}")
+
+
+if not _AUTOPPIA_IWA_IMPORT_OK:
+    logger.error(f"[AGENT_TRACE] autoppia_iwa import failed: {_AUTOPPIA_IWA_IMPORT_ERROR}")
+else:
+    _log_trace(f"autoppia_iwa import ok; BaseAction module={getattr(BaseAction, '__module__', 'unknown')}")
 
 
 def _normalize_demo_url(raw_url: str | None) -> str:
@@ -2081,6 +2108,15 @@ class ApifiedWebAgent(IWebAgent):
     ) -> list[BaseAction]:
         task_id = str(getattr(task, "id", "") or "")
         prompt = str(getattr(task, "prompt", "") or "")
+        create_action_fn = getattr(BaseAction, "create_action", None)
+        if not callable(create_action_fn):
+            logger.error(
+                "[AGENT_TRACE] BaseAction.create_action missing task_id={} step_index={} BaseAction={} import_ok={}",
+                task_id,
+                int(step_index),
+                repr(BaseAction),
+                _AUTOPPIA_IWA_IMPORT_OK,
+            )
         payload = {
             "task_id": task_id,
             "prompt": prompt,
@@ -2092,16 +2128,35 @@ class ApifiedWebAgent(IWebAgent):
         }
         resp = await self.act_from_payload(payload)
         actions = resp.get("actions") if isinstance(resp, dict) else []
+        _log_trace(
+            f"act() raw actions task_id={task_id} step_index={int(step_index)} "
+            f"count={len(actions) if isinstance(actions, list) else 0}"
+        )
         out: list[BaseAction] = []
         for a in actions if isinstance(actions, list) else []:
             if not isinstance(a, dict):
                 continue
             try:
-                ac = BaseAction.create_action(a)
+                ac = create_action_fn(a) if callable(create_action_fn) else None
                 if ac is not None:
                     out.append(ac)
-            except Exception:
+            except Exception as exc:
+                logger.error(
+                    "[AGENT_TRACE] create_action failed task_id={} step_index={} action_type={} err={} payload={}",
+                    task_id,
+                    int(step_index),
+                    str(a.get("type") or ""),
+                    str(exc),
+                    json.dumps(a, ensure_ascii=True)[:500],
+                )
                 continue
+        if isinstance(actions, list) and actions and not out:
+            logger.error(
+                "[AGENT_TRACE] all actions dropped during conversion task_id={} step_index={} raw_types={}",
+                task_id,
+                int(step_index),
+                [str(x.get("type") or "") for x in actions if isinstance(x, dict)],
+            )
         return out
 
     async def act_from_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -2205,6 +2260,14 @@ class ApifiedWebAgent(IWebAgent):
                 model_override=model_override,
             )
         except Exception as e:
+            if _LOG_ERRORS:
+                logger.exception(
+                    "[AGENT_TRACE] llm_decide exception task_id={} step_index={} url={} err={}",
+                    task_id,
+                    int(step_index),
+                    str(url),
+                    str(e),
+                )
             if os.getenv("AGENT_DEBUG_ERRORS", "0").lower() in {"1", "true", "yes"}:
                 raise HTTPException(status_code=500, detail=str(e)[:400])
             return _resp([{"type": "WaitAction", "time_seconds": 1.0}], {"decision": "error_wait"})
@@ -2290,6 +2353,14 @@ class ApifiedWebAgent(IWebAgent):
                 _update_task_state(task_id, str(url), "fallback_wait")
                 out = _resp([{"type": "WaitAction", "time_seconds": 2.0}], {"decision": "fallback_wait", "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
 
+        try:
+            action_types = [str(a.get("type") or "") for a in out.get("actions", []) if isinstance(a, dict)]
+        except Exception:
+            action_types = []
+        _log_trace(
+            f"act_from_payload task_id={task_id} step_index={int(step_index)} "
+            f"decision={str(action)} candidate_id={str(cid)} out_actions={action_types}"
+        )
         return out
 
 # -----------------------------
@@ -2318,30 +2389,38 @@ def _task_from_payload(payload: Dict[str, Any]) -> Task:
 
 @app.post("/act", summary="Decide next agent actions")
 async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
-    task = _task_from_payload(payload)
-    snapshot_html = str(payload.get("snapshot_html") or "")
-    url = _normalize_demo_url(str(payload.get("url") or ""))
-    screenshot = payload.get("screenshot")
+    task_id = str(payload.get("task_id") or "")
     step_index = int(payload.get("step_index") or 0)
-    history = payload.get("history")
-    if not isinstance(history, list):
-        history = []
-    actions = await OPERATOR.act(
-        task=task,
-        snapshot_html=snapshot_html,
-        screenshot=screenshot,
-        url=url,
-        step_index=step_index,
-        history=history,
-    )
+    url = _normalize_demo_url(str(payload.get("url") or ""))
+    _log_trace(f"/act start task_id={task_id} step_index={step_index} url={url}")
+    raw_resp = await OPERATOR.act_from_payload(payload)
+    actions = raw_resp.get("actions") if isinstance(raw_resp, dict) else []
     normalized = []
-    for action in actions:
+    for action in actions if isinstance(actions, list) else []:
         try:
+            if isinstance(action, dict):
+                normalized.append(_sanitize_action_payload(action))
+                continue
             action_payload = action.model_dump(exclude_none=True)
             normalized.append(_sanitize_action_payload(action_payload))
-        except Exception:
+        except Exception as exc:
+            logger.error(
+                "[AGENT_TRACE] /act action normalization failed task_id={} step_index={} err={} raw={}",
+                task_id,
+                step_index,
+                str(exc),
+                str(action)[:500],
+            )
             continue
-    return {"actions": normalized}
+    _log_trace(
+        f"/act end task_id={task_id} step_index={step_index} "
+        f"raw_count={len(actions) if isinstance(actions, list) else 0} out_count={len(normalized)} "
+        f"types={[str(a.get('type') or '') for a in normalized if isinstance(a, dict)]}"
+    )
+    out: Dict[str, Any] = {"actions": normalized}
+    if isinstance(raw_resp, dict) and "metrics" in raw_resp:
+        out["metrics"] = raw_resp.get("metrics")
+    return out
 
 
 @app.post("/step", summary="Alias for /act")
