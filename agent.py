@@ -2080,7 +2080,31 @@ class ApifiedWebAgent(IWebAgent):
         task = str(task or "")
 
         def _resp(actions: list[dict[str, Any]], metrics: dict[str, Any] | None = None) -> Dict[str, Any]:
-            out: Dict[str, Any] = {"actions": actions}
+            def _normalize_navigate_url(raw_url: str) -> str:
+                normalized = str(raw_url).strip()
+                if not normalized:
+                    return normalized
+                try:
+                    if "://" not in normalized:
+                        if not normalized.startswith("/"):
+                            normalized = f"/{normalized}"
+                        return f"http://127.0.0.1{normalized}"
+                    p = urlsplit(normalized)
+                    return urlunsplit(("http", "127.0.0.1", p.path or "/", p.query, p.fragment))
+                except Exception:
+                    return "http://127.0.0.1/"
+
+            sanitized_actions: list[dict[str, Any]] = []
+            for action in actions:
+                if isinstance(action, dict):
+                    action = dict(action)
+                    if str(action.get("type") or "").lower() == "navigateaction":
+                        action["url"] = _normalize_navigate_url(str(action.get("url") or ""))
+                else:
+                    action = {}
+                sanitized_actions.append(action)
+
+            out: Dict[str, Any] = {"actions": sanitized_actions}
             if return_metrics and metrics is not None:
                 out["metrics"] = metrics
             return out
