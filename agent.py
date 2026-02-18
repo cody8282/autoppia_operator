@@ -34,6 +34,36 @@ except Exception:  # pragma: no cover
 
 app = FastAPI(title="Autoppia Web Agent API")
 
+
+def _normalize_demo_url(raw_url: str | None) -> str:
+    """Rewrite URLs to localhost while preserving path/query/fragment."""
+    normalized = str(raw_url or "").strip()
+    if not normalized:
+        return normalized
+
+    try:
+        if "://" not in normalized:
+            if not normalized.startswith("/"):
+                normalized = f"/{normalized}"
+            return f"http://127.0.0.1{normalized}"
+        parsed = urlsplit(normalized)
+        return urlunsplit(("http", "127.0.0.1", parsed.path or "/", parsed.query, parsed.fragment))
+    except Exception:
+        return "http://127.0.0.1/"
+
+
+def _is_navigate_action_type(action_type: Any) -> bool:
+    value = str(action_type or "").strip().lower()
+    return value in {"navigateaction", "navigate"}
+
+
+def _sanitize_action_payload(action_payload: Dict[str, Any]) -> Dict[str, Any]:
+    payload = dict(action_payload or {})
+    if _is_navigate_action_type(payload.get("type")):
+        payload["url"] = _normalize_demo_url(payload.get("url"))
+    return payload
+
+
 # Per-task loop detection cache (process-local).
 _TASK_STATE: dict[str, dict[str, object]] = {}
 
@@ -2080,29 +2110,12 @@ class ApifiedWebAgent(IWebAgent):
         task = str(task or "")
 
         def _resp(actions: list[dict[str, Any]], metrics: dict[str, Any] | None = None) -> Dict[str, Any]:
-            def _normalize_navigate_url(raw_url: str) -> str:
-                normalized = str(raw_url).strip()
-                if not normalized:
-                    return normalized
-                try:
-                    if "://" not in normalized:
-                        if not normalized.startswith("/"):
-                            normalized = f"/{normalized}"
-                        return f"http://127.0.0.1{normalized}"
-                    p = urlsplit(normalized)
-                    return urlunsplit(("http", "127.0.0.1", p.path or "/", p.query, p.fragment))
-                except Exception:
-                    return "http://127.0.0.1/"
-
             sanitized_actions: list[dict[str, Any]] = []
             for action in actions:
                 if isinstance(action, dict):
-                    action = dict(action)
-                    if str(action.get("type") or "").lower() == "navigateaction":
-                        action["url"] = _normalize_navigate_url(str(action.get("url") or ""))
+                    sanitized_actions.append(_sanitize_action_payload(action))
                 else:
-                    action = {}
-                sanitized_actions.append(action)
+                    sanitized_actions.append({})
 
             out: Dict[str, Any] = {"actions": sanitized_actions}
             if return_metrics and metrics is not None:
@@ -2313,7 +2326,14 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         step_index=step_index,
         history=history,
     )
-    return {"actions": [action.model_dump(exclude_none=True) for action in actions]}
+    normalized = []
+    for action in actions:
+        try:
+            action_payload = action.model_dump(exclude_none=True)
+            normalized.append(_sanitize_action_payload(action_payload))
+        except Exception:
+            continue
+    return {"actions": normalized}
 
 
 @app.post("/step", summary="Alias for /act")
