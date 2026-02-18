@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 import json
-import hashlib
 import os
 import re
 from types import SimpleNamespace
@@ -16,7 +15,6 @@ from fastapi import Body, FastAPI, HTTPException
 os.environ.setdefault("LLM_PROVIDER", "openai")
 
 from llm_gateway import openai_chat_completions, is_sandbox_gateway_base_url
-from experience_memory import TrajectoryMemory, infer_high_level_intents, format_memory_context
 
 try:
     from autoppia_iwa.src.web_agents.classes import IWebAgent
@@ -36,7 +34,7 @@ except Exception:  # pragma: no cover
 
 app = FastAPI(title="Autoppia Web Agent API")
 
-# In-memory loop detection per task_id (best-effort; process-local).
+# Per-task loop detection cache (process-local).
 _TASK_STATE: dict[str, dict[str, object]] = {}
 
 
@@ -1745,7 +1743,6 @@ def _llm_decide(
     state_delta: str = "",
     ir_delta: str = "",
     prev_sig_set: set[str] | None = None,
-    memory_context: str = "",
     model_override: str = "",
 ) -> Dict[str, Any]:
     browser_state = _format_browser_state(candidates=candidates, prev_sig_set=prev_sig_set)
@@ -1753,7 +1750,7 @@ def _llm_decide(
         "You are a web automation agent. Given the task, step number, state, history, and state diff, choose ONE next action. "
         "Return JSON only (no markdown). "
         "Do NOT provide detailed chain-of-thought. "
-        "Return a JSON object with keys: action, candidate_id, text, url, evaluation_previous_goal, memory, next_goal. "
+        "Return a JSON object with keys: action, candidate_id, text, url. "
         "Preserve the current URL query parameters (e.g., seed) unless the task requires changing them. "
         "action must be one of: click,type,select,navigate,scroll_down,scroll_up,done. "
         "Constraints: for click/type/select, candidate_id must be an integer index into the BROWSER_STATE list (the number inside [..]). "
@@ -1793,17 +1790,6 @@ def _llm_decide(
                 cards_preview = cards_preview[:2397] + "..."
     except Exception:
         cards_preview = ""
-    agent_mem = ""
-    try:
-        st2 = _TASK_STATE.get(task_id) if task_id else None
-        if isinstance(st2, dict):
-            pm = str(st2.get("memory") or "").strip()
-            pg = str(st2.get("next_goal") or "").strip()
-            if pm or pg:
-                agent_mem = f"PREVIOUS MEMORY: {pm}\nPREVIOUS NEXT_GOAL: {pg}\n"
-    except Exception:
-        agent_mem = ""
-
     user_msg = (
         f"You have a task and must decide the next single browser action.\n"
         f"TASK: {task}\n"
@@ -1817,7 +1803,6 @@ def _llm_decide(
         + (f"HISTORY (last steps):\n{chr(10).join(history_lines)}\n\n" if history_lines else "")
         + (f"STATE HINT: {extra_hint}\n\n" if extra_hint else "")
         + (f"TARGETING HINT: {target_hint}\n\n" if target_hint else "")
-        + (f"EPISODIC MEMORY:\n{memory_context}\n\n" if memory_context else "")
         + (f"STATE DELTA (prev -> current): {state_delta}\n\n" if state_delta else "")
         + (f"PAGE IR DELTA (prev -> current): {ir_delta}\n\n" if ir_delta else "")
         + "BROWSER_STATE (interactive elements):\n" + browser_state + "\n\n"
@@ -1829,9 +1814,7 @@ def _llm_decide(
         + "- Use navigate with a full URL when you need to change pages (prefer preserving existing query params like seed).\n"
         + "- For type/select, include non-empty text.\n"
         + "- For delete/remove/edit tasks: confirm the target item with find_card/list_cards before clicking destructive actions.\n"
-        + "- Provide evaluation_previous_goal, memory, next_goal (each 1 sentence). Do NOT provide detailed chain-of-thought.\n"
         + "- If CREDENTIALS are provided, use those exact values when typing.\n"
-        + "- Use successful memory as positive guidance and failed memory as anti-patterns.\n"
     )
 
     # Default to validator gateway default model.
@@ -2047,7 +2030,6 @@ class ApifiedWebAgent(IWebAgent):
     def __init__(self, id: str = "1", name: str = "AutoppiaOperator") -> None:
         self.id = str(id)
         self.name = str(name)
-        self.memory = TrajectoryMemory()
 
     async def act(
         self,
@@ -2155,13 +2137,6 @@ class ApifiedWebAgent(IWebAgent):
         except Exception:
             target_hint = ""
 
-        mem_ctx = ""
-        try:
-            mem = self.memory.retrieve_similar(task=task, k_success=int(os.getenv("MEMORY_TOPK_SUCCESS", "3")), k_error=int(os.getenv("MEMORY_TOPK_ERROR", "2")))
-            mem_ctx = format_memory_context(mem)
-        except Exception:
-            mem_ctx = ""
-
         try:
             base_url = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
             if not os.getenv("OPENAI_API_KEY") and not is_sandbox_gateway_base_url(base_url):
@@ -2182,7 +2157,6 @@ class ApifiedWebAgent(IWebAgent):
                 state_delta=state_delta,
                 ir_delta=ir_delta,
                 prev_sig_set=prev_sig_set,
-                memory_context=mem_ctx,
                 model_override=model_override,
             )
         except Exception as e:
@@ -2190,40 +2164,11 @@ class ApifiedWebAgent(IWebAgent):
                 raise HTTPException(status_code=500, detail=str(e)[:400])
             return _resp([{"type": "WaitAction", "time_seconds": 1.0}], {"decision": "error_wait"})
 
-        try:
-            if task_id:
-                st3 = _TASK_STATE.get(task_id)
-                if isinstance(st3, dict):
-                    if isinstance(decision.get("memory"), str):
-                        st3["memory"] = decision.get("memory")
-                    if isinstance(decision.get("next_goal"), str):
-                        st3["next_goal"] = decision.get("next_goal")
-        except Exception:
-            pass
-
         action = (decision.get("action") or "").lower()
         cid = decision.get("candidate_id")
         text = decision.get("text")
         if isinstance(cid, str) and cid.isdigit():
             cid = int(cid)
-
-        try:
-            if task_id:
-                st_ep = _TASK_STATE.setdefault(task_id, {})
-                ep_steps = st_ep.get("episode_steps")
-                if not isinstance(ep_steps, list):
-                    ep_steps = []
-                    st_ep["episode_steps"] = ep_steps
-                ep_steps.append({
-                    "step_index": int(step_index),
-                    "url": str(url),
-                    "action": str(action),
-                    "candidate_id": int(cid) if isinstance(cid, int) else None,
-                    "text": str(text or "")[:220],
-                    "model_meta": decision.get("_meta", {}),
-                })
-        except Exception:
-            pass
 
         out: Dict[str, Any]
         if action == "navigate":
@@ -2300,38 +2245,6 @@ class ApifiedWebAgent(IWebAgent):
                 _update_task_state(task_id, str(url), "fallback_wait")
                 out = _resp([{"type": "WaitAction", "time_seconds": 2.0}], {"decision": "fallback_wait", "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
 
-        try:
-            episode_done = bool(payload.get("episode_done")) or bool(payload.get("done")) or action == "done"
-            if episode_done and task_id:
-                success_raw = payload.get("episode_success", payload.get("success", payload.get("outcome", "")))
-                if isinstance(success_raw, bool):
-                    outcome = "success" if success_raw else "error"
-                else:
-                    outcome = str(success_raw or ("success" if action == "done" else "error"))
-                reward_raw = payload.get("reward", payload.get("episode_reward", 1.0 if outcome == "success" else 0.0))
-                reward = float(reward_raw) if str(reward_raw).strip() else (1.0 if outcome == "success" else 0.0)
-
-                st_ep = _TASK_STATE.get(task_id) if task_id else None
-                steps = []
-                if isinstance(st_ep, dict) and isinstance(st_ep.get("episode_steps"), list):
-                    steps = st_ep.get("episode_steps") or []
-                summary = (decision.get("memory") or decision.get("evaluation_previous_goal") or "") if isinstance(decision, dict) else ""
-                intents = infer_high_level_intents(task)
-                self.memory.save_trajectory(
-                    task_id=task_id,
-                    task=task,
-                    outcome=outcome,
-                    reward=reward,
-                    steps=[s for s in steps if isinstance(s, dict)],
-                    summary=str(summary or f"Outcome={outcome}; steps={len(steps)}"),
-                    intents=intents,
-                    metadata={"url": str(url), "step_index": int(step_index)},
-                )
-                if isinstance(st_ep, dict):
-                    st_ep["episode_steps"] = []
-        except Exception:
-            pass
-
         return out
 
 # -----------------------------
@@ -2377,27 +2290,6 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         history=history,
     )
     return {"actions": [action.model_dump(exclude_none=True) for action in actions]}
-
-
-@app.post("/memory/trajectory", summary="Persist finished trajectory in episodic memory")
-async def memory_trajectory(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
-    task = str(payload.get("prompt") or payload.get("task_prompt") or "")
-    task_id = str(payload.get("task_id") or "")
-    outcome = str(payload.get("outcome") or ("success" if bool(payload.get("success")) else "error"))
-    reward = float(payload.get("reward") or (1.0 if outcome == "success" else 0.0))
-    steps = payload.get("steps") if isinstance(payload.get("steps"), list) else []
-    summary = str(payload.get("summary") or f"Outcome={outcome}; steps={len(steps)}")
-    entry = OPERATOR.memory.save_trajectory(
-        task_id=task_id,
-        task=task,
-        outcome=outcome,
-        reward=reward,
-        steps=[s for s in steps if isinstance(s, dict)],
-        summary=summary,
-        intents=infer_high_level_intents(task),
-        metadata={"source": "memory_endpoint"},
-    )
-    return {"ok": True, "id": entry.get("id"), "outcome": entry.get("outcome")}
 
 
 @app.post("/step", summary="Alias for /act")
