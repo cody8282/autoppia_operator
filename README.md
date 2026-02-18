@@ -61,14 +61,69 @@ This is how the gateway correlates all model calls to a single evaluation episod
 - `step_index`: current step number
 - `history`: last actions (best-effort)
 
-The agent then:
+The API layer is intentionally thin: it forwards to `AutoppiaOperator` (class implementing `IWebAgent.act()` from IWA).
+
+The operator then:
 1. Extracts interactive candidates from HTML (buttons/links/inputs, etc.).
 2. Ranks candidates against the task.
-3. Builds a compact page summary + DOM digest.
-4. Calls the LLM once to choose the next single action (`click`/`type`/`select`/`scroll_*`/`done`).
-5. Returns a single IWA action (e.g. `ClickAction`, `TypeAction`, ...).
+3. Builds a compact deterministic **Page IR** (forms, headings, links, cards, CTAs) plus deltas from previous step.
+4. Retrieves similar successful and failed trajectories from local episodic memory.
+5. Calls the LLM to choose the next single action (`click`/`type`/`select`/`scroll_*`/`done`) using Page IR + memory context.
+6. Returns a single IWA action (e.g. `ClickAction`, `TypeAction`, ...).
 
 Credential placeholders like `<username>` / `<password>` are handled by IWA (the evaluator replaces placeholders in actions before execution).
+
+## Episodic memory
+
+Trajectory store:
+- `data/memory/trajectories.jsonl`
+
+Each trajectory stores:
+- task text
+- hashed embedding of the task
+- outcome (`success` or `error`)
+- reward
+- summary
+- high-level intents (e.g. `LOGIN`, `SEARCH`, `BOOKING`)
+- step trace
+
+On each `POST /act`, the operator retrieves top similar successes/errors and injects them as compact guidance.
+
+## Built-in inspection tools
+
+The planner can request tools before choosing an action:
+- `search_text`
+- `visible_text`
+- `css_select`
+- `xpath_select`
+- `extract_forms`
+- `list_links`
+- `list_candidates`
+- `list_cards`
+- `find_card` (query-focused card retrieval)
+
+Optional endpoint to persist completed episodes explicitly:
+
+```bash
+POST /memory/trajectory
+```
+
+Payload keys:
+- `task_id`, `prompt`/`task_prompt`, `outcome` or `success`, `reward`, `steps`, `summary`
+
+## Finetuning / RL data export
+
+Export SFT data from successful trajectories:
+
+```bash
+python scripts/export_finetune_dataset.py --memory data/memory/trajectories.jsonl --out data/training/sft_success.jsonl
+```
+
+Build preference pairs for RL/DPO-style training from success vs error traces:
+
+```bash
+python scripts/build_rl_preferences.py --memory data/memory/trajectories.jsonl --out data/training/rl_preferences.jsonl
+```
 
 ## Local eval
 
@@ -92,13 +147,13 @@ Outputs are written to `data/` (gitignored).
 To compare multiple models/providers on the same task set, use:
 
 ```bash
-python compare_eval.py --runs openai:gpt-5.2 openai:gpt-4o-mini --num-tasks 5 --distinct-use-cases
+python scripts/compare_eval.py --runs openai:gpt-5.2 openai:gpt-4o-mini --num-tasks 5 --distinct-use-cases
 ```
 
 Anthropic example (requires `ANTHROPIC_API_KEY` in your env):
 
 ```bash
-python compare_eval.py --runs anthropic:claude-sonnet-4 --num-tasks 5 --distinct-use-cases
+python scripts/compare_eval.py --runs anthropic:claude-sonnet-4 --num-tasks 5 --distinct-use-cases
 ```
 
 Outputs:
