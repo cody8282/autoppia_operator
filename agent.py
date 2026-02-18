@@ -44,6 +44,14 @@ def _normalize_demo_url(raw_url: str | None) -> str:
     try:
         if "://" not in normalized:
             if not normalized.startswith("/"):
+                # Treat bare host/path values (for example "84.247.180.192/task") as local host
+                # while keeping any path/query/fragment.
+                if "." in normalized or ":" in normalized:
+                    parsed = urlsplit(f"http://{normalized}")
+                    path = parsed.path or ""
+                    if not path:
+                        return "http://localhost"
+                    return urlunsplit(("http", "localhost", path, parsed.query, parsed.fragment))
                 normalized = f"/{normalized}"
             return f"http://localhost{normalized}"
         parsed = urlsplit(normalized)
