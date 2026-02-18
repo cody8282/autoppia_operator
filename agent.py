@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import json
 import os
 import re
-from loguru import logger
+import logging
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from html.parser import HTMLParser
@@ -38,6 +38,9 @@ except Exception:  # pragma: no cover
 
 
 app = FastAPI(title="Autoppia Web Agent API")
+logger = logging.getLogger("autoppia_operator")
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s | %(message)s")
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -2111,11 +2114,9 @@ class ApifiedWebAgent(IWebAgent):
         create_action_fn = getattr(BaseAction, "create_action", None)
         if not callable(create_action_fn):
             logger.error(
-                "[AGENT_TRACE] BaseAction.create_action missing task_id={} step_index={} BaseAction={} import_ok={}",
-                task_id,
-                int(step_index),
-                repr(BaseAction),
-                _AUTOPPIA_IWA_IMPORT_OK,
+                f"[AGENT_TRACE] BaseAction.create_action missing "
+                f"task_id={task_id} step_index={int(step_index)} "
+                f"BaseAction={repr(BaseAction)} import_ok={_AUTOPPIA_IWA_IMPORT_OK}"
             )
         payload = {
             "task_id": task_id,
@@ -2142,20 +2143,16 @@ class ApifiedWebAgent(IWebAgent):
                     out.append(ac)
             except Exception as exc:
                 logger.error(
-                    "[AGENT_TRACE] create_action failed task_id={} step_index={} action_type={} err={} payload={}",
-                    task_id,
-                    int(step_index),
-                    str(a.get("type") or ""),
-                    str(exc),
-                    json.dumps(a, ensure_ascii=True)[:500],
+                    f"[AGENT_TRACE] create_action failed task_id={task_id} step_index={int(step_index)} "
+                    f"action_type={str(a.get('type') or '')} err={str(exc)} "
+                    f"payload={json.dumps(a, ensure_ascii=True)[:500]}"
                 )
                 continue
         if isinstance(actions, list) and actions and not out:
             logger.error(
-                "[AGENT_TRACE] all actions dropped during conversion task_id={} step_index={} raw_types={}",
-                task_id,
-                int(step_index),
-                [str(x.get("type") or "") for x in actions if isinstance(x, dict)],
+                f"[AGENT_TRACE] all actions dropped during conversion task_id={task_id} "
+                f"step_index={int(step_index)} "
+                f"raw_types={[str(x.get('type') or '') for x in actions if isinstance(x, dict)]}"
             )
         return out
 
@@ -2262,11 +2259,8 @@ class ApifiedWebAgent(IWebAgent):
         except Exception as e:
             if _LOG_ERRORS:
                 logger.exception(
-                    "[AGENT_TRACE] llm_decide exception task_id={} step_index={} url={} err={}",
-                    task_id,
-                    int(step_index),
-                    str(url),
-                    str(e),
+                    f"[AGENT_TRACE] llm_decide exception task_id={task_id} "
+                    f"step_index={int(step_index)} url={str(url)} err={str(e)}"
                 )
             if os.getenv("AGENT_DEBUG_ERRORS", "0").lower() in {"1", "true", "yes"}:
                 raise HTTPException(status_code=500, detail=str(e)[:400])
@@ -2405,11 +2399,8 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
             normalized.append(_sanitize_action_payload(action_payload))
         except Exception as exc:
             logger.error(
-                "[AGENT_TRACE] /act action normalization failed task_id={} step_index={} err={} raw={}",
-                task_id,
-                step_index,
-                str(exc),
-                str(action)[:500],
+                f"[AGENT_TRACE] /act action normalization failed task_id={task_id} "
+                f"step_index={step_index} err={str(exc)} raw={str(action)[:500]}"
             )
             continue
     _log_trace(
