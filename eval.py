@@ -117,7 +117,7 @@ def inject_seed(task: Task, seed: int | None = None) -> tuple[Task, int]:
 
 async def run_evaluation(
     provider: str = "openai",
-    model: str = "gpt-5-mini",
+    model: str = "gpt-4o",
     num_tasks: int = 20,
     max_steps: int = 15,
     use_case: str | None = None,
