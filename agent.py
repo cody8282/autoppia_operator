@@ -1886,7 +1886,7 @@ def _llm_decide(
     )
 
     # Default to validator gateway default model.
-    model = str(model_override or os.getenv("OPENAI_MODEL", "gpt-5.2"))
+    model = str(model_override or os.getenv("OPENAI_MODEL", "gpt-4.1"))
     temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
     max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "350"))
 
