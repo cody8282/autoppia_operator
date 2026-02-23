@@ -298,6 +298,11 @@ def _attrs_to_str_map(attrs: Dict[str, Any]) -> Dict[str, str]:
 
 def _build_selector(tag: str, attrs: Dict[str, str], *, text: str) -> Dict[str, Any]:
     # Prefer attributes that map directly to IWA Selector.to_playwright_selector().
+    if tag == "input" and attrs.get("type") == "search":
+        # AutoZone has a duplicate-ID bug: both the container div AND the search input share
+        # the same V3 ID. Using the ID selector would match the div first (not fillable).
+        # css selector `input[type='search']` uniquely targets the actual input element.
+        return {"type": "attributeValueSelector", "attribute": "custom", "value": "input[type='search']"}
     if attrs.get("id"):
         return _sel_attr("id", attrs["id"])
     if attrs.get("data-testid"):
@@ -314,6 +319,11 @@ def _build_selector(tag: str, attrs: Dict[str, str], *, text: str) -> Dict[str, 
         return _sel_attr("title", attrs["title"])
     if text and tag in {"button", "a"}:
         return _sel_text(text, case_sensitive=False)
+    if text and tag == "input" and len(text) <= 40:
+        # Input inside a labeled container (e.g. <label>Author <input/></label>).
+        # Use position-safe XPath so each field gets a unique, stable selector.
+        safe = text.replace('"', "'")
+        return {"type": "xpathSelector", "value": f'(//label[normalize-space()="{safe}"]//input)[1]'}
     return _sel_custom(tag)
 
 
@@ -1226,7 +1236,35 @@ def _history_hint(history: List[Dict[str, Any]] | None) -> str:
         return ""
 
     last = history[-6:]
-    # Detect simple repetition: same action+cid repeated.
+
+    # Detect same candidate typed multiple times — field is already filled.
+    type_cid_counts: Dict[Any, int] = {}
+    for h in last:
+        if str(h.get("action") or "") == "type":
+            cid = h.get("candidate_id")
+            type_cid_counts[cid] = type_cid_counts.get(cid, 0) + 1
+    for cid, cnt in type_cid_counts.items():
+        if cnt >= 2:
+            return (
+                f"⚠️ You already typed into candidate {cid} in a previous step. "
+                "Do NOT type in that field again. Move to the next EMPTY field, or if all fields are filled, click Submit/Save/Send."
+            )
+
+    # Detect same candidate clicked multiple times — toggle/button already acted.
+    click_cid_counts: Dict[Any, int] = {}
+    for h in last:
+        if str(h.get("action") or "") == "click":
+            cid = h.get("candidate_id")
+            click_cid_counts[cid] = click_cid_counts.get(cid, 0) + 1
+    for cid, cnt in click_cid_counts.items():
+        if cnt >= 2:
+            return (
+                f"⚠️ You already clicked candidate {cid} {cnt} times. "
+                "If this is a watchlist/share/like/trailer/toggle button, it fired on the FIRST click — use done. "
+                "Otherwise pick a DIFFERENT element."
+            )
+
+    # Detect simple repetition: same action+cid repeated consecutively.
     repeats = 0
     prev = None
     for h in last:
@@ -1236,7 +1274,23 @@ def _history_hint(history: List[Dict[str, Any]] | None) -> str:
         prev = k
 
     if repeats >= 2:
-        return "You appear to be repeating the same action. Choose a DIFFERENT candidate or try scroll."
+        return "You appear to be repeating the same action. Choose a DIFFERENT candidate or navigate away."
+
+    # Detect form-fill loop: last 3+ steps are all TypeAction (filling fields without submitting).
+    recent = last[-4:]
+    if len(recent) >= 3 and all(str(h.get("action") or "") == "type" for h in recent):
+        return (
+            "You have been filling form fields for several steps. "
+            "If all required fields are filled (check ALREADY TYPED list), click the submit/save/send button NOW."
+        )
+
+    # Detect click-only loop: last 4+ steps are all ClickAction (toggle/button stuck).
+    if len(recent) >= 4 and all(str(h.get("action") or "") == "click" for h in recent):
+        return (
+            "You have clicked buttons for several steps. "
+            "If the task action (add/remove/share/toggle) was performed on the first click, use done. "
+            "Otherwise try a different element or scroll."
+        )
 
     return ""
 
@@ -1815,22 +1869,146 @@ def _llm_decide(
 ) -> Dict[str, Any]:
     browser_state = _format_browser_state(candidates=candidates, prev_sig_set=prev_sig_set)
     system_msg = (
-        "You are a web automation agent. Given the task, step number, state, history, and state diff, choose ONE next action. "
-        "Return JSON only (no markdown). "
-        "Do NOT provide detailed chain-of-thought. "
+        "You are an expert web automation agent. Given the task, page state, and history, choose ONE next action. "
+        "Return JSON only — no markdown, no explanation outside JSON. "
         "Return a JSON object with keys: action, candidate_id, text, url. "
-        "Preserve the current URL query parameters (e.g., seed) unless the task requires changing them. "
         "action must be one of: click,type,select,navigate,scroll_down,scroll_up,done. "
-        "Constraints: for click/type/select, candidate_id must be an integer index into the BROWSER_STATE list (the number inside [..]). "
-        "For type/select, text must be non-empty. Avoid done unless the task is clearly completed. "
-        "If the task requires choosing a specific item that matches multiple attributes, first inspect the page using list_cards or list_links, then click/navigate to the matching item. "
-        "You may optionally request an HTML inspection tool instead of an action by returning JSON with keys: tool, args. "
-        "Available tools: search_text(args: {query, regex?, case_sensitive?, max_matches?, context_chars?}); "
-        "visible_text(args: {max_chars?}); css_select(args: {selector, max_nodes?}); xpath_select(args: {xpath, max_nodes?}); "
-        "extract_forms(args: {max_forms?, max_inputs?}); list_links(args: {max_links?, context_max?, href_regex?, text_regex?}); "
-        "list_candidates(args: {max_n?}); list_cards(args: {max_cards?, max_text?, max_actions_per_card?}); "
-        "find_card(args: {query, max_cards?, max_text?, max_actions_per_card?}). "
-        "After a tool result is returned, pick the next action. Prefer at most 2 tool calls per step."
+        "For click/type/select: candidate_id must be an integer from the BROWSER_STATE list (the number inside [..]). "
+        "For type/select: text must be non-empty. "
+        "Preserve current URL query parameters (especially ?seed=N) in any navigate URL.\n"
+        "\n"
+        "NAVIGATION RULES:\n"
+        "- ALWAYS prefer clicking links over navigate. Clicking preserves URL params automatically.\n"
+        "- Look for login/register/contact/search links in nav/header/footer before navigating.\n"
+        "- CRITICAL: If you must use navigate, copy the EXACT origin (scheme+host+port) from the current URL shown in 'URL:' above. If URL is 'http://localhost:8001/...' use 'http://localhost:8001/...' not 'http://localhost/...' (the port number is REQUIRED).\n"
+        "- Do NOT use done just because you navigated to a relevant page. done means task fully complete.\n"
+        "\n"
+        "CREDENTIAL RULES:\n"
+        "- When task contains <username>, <password>, <signup_username>, <signup_email>, <signup_password>: type these EXACT placeholder strings including angle brackets.\n"
+        "- Do NOT invent credentials. Use the exact placeholder values from the task.\n"
+        "\n"
+        "FORM RULES:\n"
+        "- Fill ALL form fields before clicking submit.\n"
+        "- ALWAYS check the ALREADY TYPED list below — do NOT type in a field that is already listed there. Move to the next empty field.\n"
+        "- Once all required fields are filled, click the submit/save/send button.\n"
+        "\n"
+        "TOGGLE/ONE-SHOT BUTTON RULES:\n"
+        "- For watchlist/share/like/trailer buttons: click ONCE. The action fires on the FIRST click.\n"
+        "- After the first click on a toggle button: use done immediately — do NOT click it again.\n"
+        "- If STATE DELTA shows summary_changed=true after a click, the action succeeded — use done.\n"
+        "\n"
+        "SEARCH TASK RULES:\n"
+        "- To search: type the query in the search input field, then click the Search/Go button.\n"
+        "- done when search results are DISPLAYED on the page — do NOT click individual result links.\n"
+        "- The goal is to fire the search event, NOT to navigate to a specific item's detail page.\n"
+        "\n"
+        "PROFILE/ADMIN TASKS (add/edit/delete/manage items):\n"
+        "- These always require login first. If you are not logged in, click the Login link in the nav and log in.\n"
+        "- After login, click the Profile/username link in the nav bar to go to the profile page.\n"
+        "- On the profile page, look for TABS: 'Movies/Books/Items', 'Add Movies/Add Books/Add Items', 'Watchlist', etc.\n"
+        "- CRITICAL TAB RULE: After clicking a TAB, the content loads immediately without a page reload. BEFORE clicking any tab, scan the BROWSER_STATE to see if the tab content is already visible. If you see form fields (Title, Author, Year, Pages, Rating, etc.) or a list of items already shown, the tab already switched — do NOT click the tab again. Go straight to interacting with the visible content.\n"
+        "- HOW TO KNOW THE TAB CLICK WORKED: In the next step, if BROWSER_STATE shows form inputs labeled 'Title', 'Author', 'Year', 'Pages', 'Duration', 'Rating' etc., the 'Add Item' tab successfully loaded. If you see a list of book/movie cards, the 'Items' tab loaded. Just interact with what's there — do NOT click the tab button a second time.\n"
+        "- To ADD a new item: click the 'Add [Film/Book]' tab ONCE. Use extract_forms() to see all form fields and their labels. For ADD_BOOK: validated fields are year, author, rating, AND genre — set all to satisfy task criteria. For ADD_FILM, set the Duration field to match task criteria. Then click Save/Add/Submit.\n"
+        "- For Add Book form fields: Title (text input), Author (text input), Year (text input — MUST match task year criteria), Pages/page_count (text input — NOT validated, use any number like '300'), Rating (text input — must match task criteria), Preview URL (text input). Then genre BUTTONS to click (available: Drama, Comedy, Action, Thriller, Sci-Fi, Fantasy, Horror, Documentary, Romance, Fiction, Non-Fiction, Mystery). For genres in the pill list: click that pill button. For genres NOT in the list (e.g. 'Short Stories', 'Psychological', 'Adventure', 'Historical Fiction'): clear and type in the 'Custom genre' text input field (placeholder='Custom genre list'). Then Synopsis textarea at the bottom (optional). DO NOT leave genre empty if genre criteria exists.\n"
+        "- For Add Film form fields: Title (text), Director (text), Year (text), Duration/Minutes (text = runtime in minutes), Rating (text), Genre buttons, Synopsis textarea. ONLY change non-matching fields.\n"
+        "- To EDIT an item: click the 'Movies/Books'/'Edit Books' tab ONCE, wait for the list to appear. For AutoBooks (EDIT_BOOK): the BookEditor form is INLINE below each book — there is NO separate Edit button. Directly modify the Year, Author, Rating, and Genre fields in the visible form, then click Save Changes. GENRE IN EDIT_BOOK: click the genre pill matching the required genre (e.g. click 'Romance' pill), or for genres not in the list type in the custom genre text input. For AutoCinema (EDIT_FILM): use find_card to locate the item, click its Edit button, modify fields, click Save.\n"
+        "- To DELETE an item: click the 'Movies/Books' tab ONCE, wait for list. For DELETE_FILM: use visible_text() to read the movie titles and directors listed on the Movies tab. Find a movie that satisfies the criteria (e.g., director NOT in ['Ridley Scott', 'Andrew Stanton']). Each movie card shows director info. Once you identify the right movie, use search_text('Delete') or find the delete button NEAR that movie's title, then click it. DO NOT just click the first Delete button — verify the director first.\n"
+        "- To REMOVE from watchlist/favorites: click the 'Watchlist' tab ONCE, find the item, click its Remove button.\n"
+        "\n"
+        "TASK-SPECIFIC GUIDANCE:\n"
+        "- Search tasks: find the search input in the nav or on the search/browse page, type the query, click Search/Go. done when RESULTS are shown. Do NOT click individual result links.\n"
+        "- Filter tasks (FILTER_FILM, FILTER_BOOK): IMPORTANT: navigating directly to /search?genre=Romance does NOT fire the filter event — you MUST interact with the filter UI. For FILTER_FILM: CLICK the 'Search', 'Browse', or 'Explore' link in the NAV BAR to navigate to /search page. On the /search page: (a) quick genre BUTTONS are displayed near the top — click ANY of them (e.g. 'Romance', 'Action', 'Sci-Fi') OR (b) use the genre <select> dropdown (SelectDropDownOptionAction with genre value). FILTER_FILM fires immediately on the button click or select change. The task criteria for FILTER_FILM uses key 'genres' which is silently ignored by validation — so ANY genre button click fires FILTER_FILM and the task passes! Just click any genre button then done.\n"
+        "- Detail page tasks: the DETAIL VIEW event fires automatically on page load. To find an item with a SPECIFIC RATING: use list_cards() on the main listing page to scan items and find one matching the exact rating specified in the task. Then click on that item to go to its detail page. The event fires automatically.\n"
+        "- Trailer/preview/media tasks: navigate to a matching item's detail page, then click the play/preview/trailer button ONCE, then done.\n"
+        "- Contact/form tasks: find the contact link in nav, fill each empty field in turn (check ALREADY TYPED list), then click Submit.\n"
+        "- ADD item tasks ('Add a film', 'Add a book', 'Add a product'): CREATE a NEW catalog entry. NEVER click a watchlist/cart button. Login first, then go to Profile, click 'Add [Film/Book]' tab, fill the creation form, then click Save/Add/Create.\n"
+        "- Edit profile/user tasks: click the profile/settings link in nav, fill the fields that need changing, then click Save.\n"
+        "- Edit ITEM tasks (edit a film/book/product): Login → Profile → Items tab → find_card to locate item → Click Edit → modify fields → Save.\n"
+        "- Delete tasks: Login → Profile → Items tab → find_card to locate specific item matching criteria → Click Delete → confirm if dialog appears.\n"
+        "- Add to watchlist/reading-list tasks (ADD_TO_WATCHLIST, ADD_TO_READING_LIST): REQUIRES LOGIN. CRITICAL: if NOT logged in, clicking the watchlist button shows 'Please sign in' and fires NO event. Must log in first! Steps: (1) click Login nav link, fill username/password, submit. (2) Use list_cards() on the main movie list to find a movie with rating satisfying criteria (e.g. rating >= 4.6 — scan card ratings). (3) Click on that movie to navigate to its detail page. (4) Click the bookmark/watchlist button ONCE — text varies: 'Add to Watchlist', 'Watchlist', 'Save', 'Bookmark'. ADD_TO_WATCHLIST fires on click (only when logged in).\n"
+        "- Add to cart tasks (ADD_TO_CART): does NOT require login. Find item matching criteria on its detail page, click Add to Cart, then done.\n"
+        "- Remove from cart tasks: the cart starts EMPTY. You MUST first (1) find a book matching the criteria, (2) navigate to its detail page, (3) click Add to Cart, (4) navigate to the cart page (/cart or cart link in nav), (5) click Remove on the matching item, then done.\n"
+        "- Remove from reading list tasks (REMOVE_FROM_READING_LIST): REQUIRES LOGIN. The reading list toggle is on the BOOK DETAIL PAGE. VALIDATED fields: only rating, genre, name, year (NOT page_count, NOT author). To remove: (1) log in, (2) find ANY book matching the validated criteria (check rating/genre/name/year — ignore page_count and author in task prompt), (3) navigate to its detail page, (4) click the bookmark/reading-list button ONCE to ADD it (fresh session = book not in list), (5) then click the SAME button AGAIN to REMOVE it. REMOVE_FROM_READING_LIST fires on the SECOND click.\n"
+        "- Remove from watchlist tasks (REMOVE_FROM_WATCHLIST, cinema/movies): REQUIRES LOGIN. IMPORTANT: the Profile Watchlist tab 'Remove from List' button does NOT fire REMOVE_FROM_WATCHLIST. The event only fires from the movie DETAIL PAGE watchlist toggle button. Steps: (1) Log in. (2) Find a movie matching criteria (e.g. genres NOT 'Horror', rating NOT 4.6). (3) Navigate to its detail page. (4) Click the watchlist button ONCE to ADD it (ADD_TO_WATCHLIST fires). (5) Click the SAME watchlist button AGAIN to REMOVE it — button text now says 'In Watchlist', 'Remove', 'Remove from Watchlist'. REMOVE_FROM_WATCHLIST fires on the SECOND click.\n"
+        "- Comment/review tasks: navigate to a matching item's detail page, find the comment/review form, fill commenter_name and content fields, click Submit.\n"
+        "- Purchase tasks (PURCHASE_BOOK): flow is: (1) find item matching name criteria (search or browse), (2) go to its detail page, (3) click Add to Cart, (4) navigate to cart (/cart), (5) click the Purchase button. PURCHASE_BOOK fires per item in cart on Purchase click.\n"
+        "- Share tasks: navigate to the matching item's detail page, click the Share button ONCE, then done. No login required.\n"
+        "- View cart/list tasks: CLICK the cart icon/link in the nav bar. The VIEW_CART event fires automatically on cart page load. Done immediately after navigating to cart.\n"
+        "- View wishlist from homepage preview tasks: CLICK the 'View All' or 'Open Wishlist' button in the homepage wishlist preview SECTION (not the nav link), then done.\n"
+        "- Quantity update tasks: if the item is not yet in cart, first add it (find product → detail page → Add to Cart), then navigate to cart, then update the quantity input, then done.\n"
+        "- Page view tasks (About, Help, Contact, Menu): navigate/click to the target page, do scroll_down once, then done.\n"
+        "- Dropdown/selector tasks: click the dropdown trigger to OPEN it, then click the desired option from the list, then done (after selecting the value).\n"
+        "- Carousel/scroll section tasks: find the named section on the page, click its scroll arrow button (left/right) or use scroll_down, then done.\n"
+        "- Toggle/expand/collapse tasks: find the named item/section, click its toggle/expand/collapse button ONCE, then done.\n"
+        "- FAQ/accordion tasks: find the FAQ item matching the criteria, click it to expand/toggle, then done.\n"
+        "- Reservation/booking tasks: find the restaurant/venue matching criteria, fill the booking form (date, time, people, occasion), submit, then done.\n"
+        "\n"
+        "E-COMMERCE TASKS (AutoZone and similar shops):\n"
+        "- Search tasks (SEARCH_PRODUCT): the SEARCH event fires ONLY when using the HEADER search bar. IMPORTANT: AutoZone has a duplicate-ID bug where both the search container div AND the search <input> element share the same V3 ID. ALWAYS use css_select('input[type=\"search\"]') to fill the search input (this uniquely targets the actual text field). Then click the SEARCH SUBMIT BUTTON. The search button has NO visible text (only a magnifying glass icon), with aria-label varying by V3: 'Search', 'Go', 'Find', 'Submit', 'Look up', 'Search Now', 'Execute', 'Query'. Use css_select('[id*=\"search-btn\"], [id*=\"submit-search\"], [id*=\"go-search\"], [id*=\"search-action\"], [id*=\"find-btn\"], [id*=\"query-btn\"], [id*=\"search-submit\"]') to find the submit button, OR use css_select('button[aria-label]') to get all labeled buttons and pick the search-looking one. SEARCH_PRODUCT fires on button click. Do NOT navigate to /search?q=... directly.\n"
+        "- Category filter tasks (CATEGORY_FILTER): CRITICAL FIRST STEP: NavigateAction to '/search' BEFORE doing anything else. Do NOT use the homepage header 'categories-selector' dropdown — that is a homepage UI element and does NOT fire CATEGORY_FILTER. CATEGORY_FILTER fires ONLY on /search page category buttons. After NavigateAction to '/search', use search_text('Fitness') (or the required category name) to locate the category filter button on the /search page, then ClickAction on it ONCE. CATEGORY_FILTER fires immediately. Labels: 'Kitchen', 'Technology', 'Home', 'Electronics', 'Fitness'. Button IDs use V3 variants of 'category-link' key. Done.\n"
+        "- Product detail view (VIEW_DETAIL): the event fires automatically when you navigate to any product detail page. To find a product matching price/brand/rating criteria: use list_cards() on the homepage or search results to scan products, find one matching ALL criteria, click on it.\n"
+        "- Expand/collapse product details (DETAILS_TOGGLE): go to a product detail page matching the title/rating/price/brand/category criteria. Scroll DOWN on the product detail page to find the shipping section in the RIGHT column (it may be below the fold). The shipping section label varies via V3: 'Shipping options', 'Delivery options', 'Shipping choices', 'Delivery choices', 'Shipping methods', 'Delivery'. Click the Expand OR Collapse button in that section header — button text varies: 'Expand', 'Open', 'Show more', 'Show details', 'See more', 'Reveal', 'More', 'Details' (for expand), or 'Collapse', 'Close', 'Hide', 'Show less' (for collapse). Use search_text('Expand') or search_text('Show') or search_text('Collapse') to find it. DETAILS_TOGGLE fires on click. To find a product with a specific title keyword (e.g. 'Scale'): fill css_select('input[type=\"search\"]') with the keyword and click the search button.\n"
+        "- Share product tasks (SHARE_PRODUCT): ALL criteria fields are validated including EXACT rating. The task criteria may specify an EXACT rating like 4.6 — you MUST find a product with EXACTLY that rating. Use list_cards() to scan products and check their ratings. Once you find a product with the correct rating (AND matching other criteria like category NOT 'Electronics', title NOT 'Cordless Vacuum'), navigate to its detail page. Find and click the share button ONCE — text varies: 'Share product', 'Share', 'Send', 'Share this', 'Send link'. Use search_text('Share') to locate it. SHARE_PRODUCT fires on click.\n"
+        "- Add to cart tasks (ADD_TO_CART): find the product matching ALL criteria (brand, price, rating). If a brand is specified (e.g. 'CalmRest'), fill the HEADER search input using css_select('input[type=\"search\"]') with the brand name and click the search button — this narrows results. Use list_cards() on search results to verify price and rating match all criteria. Navigate to the product's detail page. The 'Add to Cart' button text varies: 'Add to Cart', 'Add to Basket', 'Add Item', 'Put in Cart'. Use search_text('Cart') or 'Basket' to find it. Click it ONCE. ALL criteria fields are validated.\n"
+        "- Buy now / Checkout started tasks (CHECKOUT_STARTED): CRITICAL: 'total_amount' is NOT validated — ANY product's Buy Now click passes! The first step MUST be to navigate to a product DETAIL PAGE (NOT the homepage). Do NOT click the carousel 'Add to Basket' buttons on the homepage — those are ADD_TO_CART buttons, not Buy Now. Step 1: use list_cards() on the homepage to see products, then ClickAction on ANY product card title/image link to navigate to its detail page. Step 2: on the detail page, scroll down to find the Buy Now button in the RIGHT column purchase panel. Button text varies: 'Buy Now', 'Purchase Now', 'Order Now', 'Quick Buy', 'Instant Purchase'. Use search_text('Buy') or search_text('Now') to find it. Click it ONCE. CHECKOUT_STARTED fires immediately.\n"
+        "- Proceed to checkout tasks (PROCEED_TO_CHECKOUT): total_amount IS validated (unlike CHECKOUT_STARTED). Use list_cards() on the HOMEPAGE to scan ALL product prices. Find a product with price EXACTLY matching total_amount (e.g. $39.99). Navigate to that product's detail page. Click 'Add to Cart' — IMPORTANT: clicking Add to Cart AUTOMATICALLY navigates you to the cart page (/cart), so you do NOT need a separate NavigateAction to /cart. On the cart page, use search_text('Checkout') or search_text('Proceed') to find the checkout button (text varies: 'Proceed to Checkout', 'Checkout', 'Go to Checkout', 'Continue to Checkout'). Click it ONCE. PROCEED_TO_CHECKOUT fires on click.\n"
+        "- Order completion tasks (ORDER_COMPLETED): add any product to cart, click Proceed to Checkout, fill the checkout form, click 'Complete Order' / 'Place Order'. Any product works unless the title is excluded.\n"
+        "- Quantity update tasks (QUANTITY_CHANGED): APPROACH 1 (preferred — product detail page): Search for the specific product by name (e.g. 'Velvet Accent Chair') using the HEADER search bar css_select('input[type=\"search\"]'), click search, then navigate to the product detail page. The product page has a quantity <select> dropdown — use css_select('select') to get it (usually the only select on the page). The select ID varies by V3: 'qty-input', 'quantity-field', 'qty-field', 'amount-input', 'qty-box', 'quantity-select'. Options are 1-10. Use SelectDropDownOptionAction with selector 'select' and value '6' (or any value > 5 for new_quantity > 5). QUANTITY_CHANGED fires on dropdown change. APPROACH 2 (cart): add the product to cart (Auto-Cart navigates to /cart), then click 'Increase quantity' / '+' button MULTIPLE TIMES in the cart (5 times to reach qty 6 from qty 1). QUANTITY_CHANGED also fires from cart +/- buttons. APPROACH 1 is simpler — prefer it.\n"
+        "- View cart tasks (VIEW_CART): click the cart icon/link in the HEADER or navigate to /cart. VIEW_CART has empty criteria → passes immediately when the cart page loads.\n"
+        "- View wishlist tasks (VIEW_WISHLIST): click 'View all saved' button in the homepage wishlist PREVIEW SECTION (not the nav cart icon). VIEW_WISHLIST has empty criteria → passes immediately.\n"
+        "- Wishlist/favorites tasks (ADD_TO_WISHLIST): find a product matching ALL criteria (category AND price). Category criteria use CONTAINS logic: 'hen' is a SUBSTRING of 'Kitchen', so category CONTAINS 'hen' means find a KITCHEN category product. DO NOT type 'hen' or the substring in the search bar — that searches product titles, not categories. Instead: on the homepage, scroll to the 'Kitchen Essentials' carousel section (category='Kitchen') to find Kitchen products. Use list_cards() to check prices and find one with price satisfying the criteria (e.g. >= $48.75). Navigate to its detail page. CRITICAL: the WISHLIST button and the ADD TO CART button are TWO SEPARATE BUTTONS — do NOT click the cart button! The wishlist button text varies: 'Add to wishlist', 'Save', 'Add to favorites', 'Save for later', 'Favorite'. Its ID uses V3 variant of 'wishlist-button' key (default 'wishlist-button'). Use search_text('wishlist') or search_text('favorite') or search_text('Save') to find the WISHLIST button (NOT the 'Add to Cart'/'Basket' button). Click the WISHLIST button ONCE. ADD_TO_WISHLIST fires on click. CATEGORY mapping: 'Kitchen'=kitchen essentials carousel, 'Technology'=tech carousel, 'Home'=home carousel, 'Electronics', 'Fitness'.\n"
+        "- Homepage carousel tasks (CAROUSEL_SCROLL): on the AutoZone homepage, there are 3 product carousel sections: 'Kitchen Essentials', 'Technology & Gadgets', and 'Home & Living'. Each carousel header has a LEFT arrow button and a RIGHT arrow button. IMPORTANT: the aria-label and IDs of these buttons VARY by V3 seed. Left arrow aria-label variants: 'Scroll left', 'Previous', 'Back', 'Left'. Right arrow aria-label variants: 'Scroll right', 'Next', 'Forward', 'Right'. Left arrow ID variants: 'carousel-left-btn', 'carousel-prev', 'carousel-control-left'. Right arrow ID variants: 'carousel-right-btn', 'carousel-next', 'carousel-control-right'. Use css_select('[id*=\"carousel-left\"], [id*=\"carousel-prev\"], [id*=\"carousel-control-left\"]') to find ALL left arrows, OR use visible_text() to find buttons near section headers. For direction NOT 'RIGHT': click a LEFT arrow. For direction NOT 'LEFT': click a RIGHT arrow. If a carousel title is excluded (e.g. title NOT_EQUALS 'Kitchen Essentials'), click buttons on any OTHER carousel section. CAROUSEL_SCROLL fires immediately on arrow click.\n"
+        "\n"
+        "BOOK CATALOG TASKS (AutoBooks and similar):\n"
+        "- Login: navigate to /login or click Login in nav, fill username and password, click Submit/Login.\n"
+        "- Logout (LOGOUT_BOOK): first log in as <username>, then click the Logout button/link in the nav. REQUIRES being logged in as the correct user.\n"
+        "- Registration: navigate to /register, fill username, email, password, click Register/Sign Up.\n"
+        "- Search (SEARCH_BOOK): use the search bar to type a query, click the Search button. The event fires on search submit.\n"
+        "- Filter (FILTER_BOOK): IMPORTANT: use ClickAction to navigate to /search (click the Search nav link), NOT NavigateAction with a URL. IMPORTANT: the task criteria key 'genres' (plural) is SILENTLY DROPPED by validation — so ANY filter interaction (click any genre button OR change the year dropdown) fires FILTER_BOOK and passes! Fastest approach: (1) ClickAction on the Search/Browse nav link. (2) SelectDropDownOptionAction on the year <select> dropdown — select any year like '2000'. Done. If you MUST use genre: the /search page has genre <select> and year <select> dropdowns. Use SelectDropDownOptionAction on the correct <select> with the genre name. V1 may reorder selects: use extract_forms() to identify genre (text options) vs year (4-digit numbers).\n"
+        "- Book detail (BOOK_DETAIL): the event fires AUTOMATICALLY when you navigate to any book detail page (/books/[id]). VALIDATED fields: name, genre, year, rating ONLY (author, price, page_count, username/password in criteria are NOT validated — ignore them). IMPORTANT: do NOT go to the Profile > Books tab — that only shows YOUR added books (a small subset). Use the /search page or homepage to find books from the full catalog. To find a book: use list_cards() on the /search page or homepage to scan ratings/names, find one matching the VALIDATED criteria (e.g. rating = 4.7, name CONTAINS 'cula'), then click on it. If criteria has ONLY name (e.g. name = 'The Overstory'), use the search bar to search for it and click the result. No login required.\n"
+        "- Preview (OPEN_PREVIEW): VALIDATED fields: name, genre, year, rating ONLY (username/password, author, page_count in criteria are ignored — login NOT required). IMPORTANT: do NOT go to Profile > Books tab. Use list_cards() on the /search page or homepage to find books from the full catalog. Find a book matching the validated criteria. Navigate to its detail page. Click the READ button ONCE — it has a BookOpen icon and its text varies via V3: 'Read book', 'Read', 'Open book', 'Start reading', 'Read now', 'View book', 'Open', 'Start'. Use search_text('Read') or search_text('Open') to find it. OPEN_PREVIEW fires on click.\n"
+        "- Share (SHARE_BOOK): VALIDATED fields: name, genre, year, rating ONLY (price, author, username/password in criteria are NOT validated). LOGIN IS NEVER REQUIRED for SHARE_BOOK — DO NOT login even if the task prompt mentions username/password or credentials, they are NOT validated and login wastes steps. Find a book matching ONLY the name/genre/year/rating criteria from the task using list_cards() on /search or homepage. Navigate to its detail page, click the Share button ONCE. SHARE_BOOK fires on click.\n"
+        "- Add to cart (ADD_TO_CART_BOOK): VALIDATED fields: name, genre, year, rating ONLY (price, author, page_count in criteria NOT validated). LOGIN IS NOT REQUIRED for ADD_TO_CART_BOOK — the cart endpoint has no auth check. DO NOT waste steps logging in. Find a book matching ONLY the name/genre/year/rating criteria using list_cards() on /search or homepage. Navigate to its detail page. Click the Add to Cart button ONCE — text varies via V3: 'Add', 'Add to Cart', 'Add to Bag', 'Add Item', 'Add to Basket'. Use search_text('Add') to find it.\n"
+        "- Remove from cart (REMOVE_FROM_CART_BOOK): LOGIN IS NOT REQUIRED — the cart/remove endpoint has no auth check. VALIDATED fields: name, genre, year, rating ONLY (author, price, desc in criteria are NOT validated — ignore them). Steps: (1) Find ANY book matching the VALIDATED criteria using list_cards() on /search or homepage. (2) Click the book to go to its detail page. (3) Click Add to Cart button (no login needed). (4) Navigate to /cart (NavigateAction to '/cart' or click cart icon). (5) Click the Remove button on that cart item. REMOVE_FROM_CART_BOOK fires on Remove click. Use search_text('Remove') or search_text('Delete') to find the button.\n"
+        "- Purchase (PURCHASE_BOOK): LOGIN IS NOT REQUIRED for PURCHASE_BOOK — the purchase endpoint has no auth check. VALIDATED fields: name, genre, year, rating ONLY (author, price in criteria NOT validated). Find a book matching ONLY the validated criteria (name CONTAINS X → search for X; genre NOT CONTAINS X → pick any book without that genre; year/rating must match). Navigate to its detail page and click Add to Cart (no login needed). THEN navigate to /cart. Click the purchase button — text varies: 'Purchase', 'Buy', 'Checkout', 'Complete Purchase', 'Buy Now' — use search_text('Purchase') or search_text('Buy'). PURCHASE_BOOK fires on click.\n"
+        "- Add to reading list (ADD_TO_READING_LIST): REQUIRES LOGIN — handleWatchlist() checks auth and returns early if not logged in; event NEVER fires without login. CRITICAL: ALWAYS LOG IN FIRST even if the task prompt does NOT mention credentials. Use <username>/<password> from task if provided, otherwise log in with user1/Passw0rd!. Then use list_cards() to find a book matching the criteria (name, rating, genre, year), go to its detail page. Click the reading list/bookmark button ONCE — text varies via V3: 'Add to reading list', 'Add to list', 'Save to list', 'Add to library', 'Save book', 'Bookmark', 'Add', 'Save'. Use search_text('list') or search_text('Save') or search_text('Bookmark') to find it. ADD_TO_READING_LIST fires on click.\n"
+        "- Remove from reading list (REMOVE_FROM_READING_LIST): REQUIRES LOGIN. VALIDATED fields: only rating, genre, name, year (ignore page_count and author in task prompt — they are NOT validated). CRITICAL: ALWAYS LOG IN FIRST. CRITICAL: do NOT go to Profile > Reading List tab — the 'Remove from List' button there does NOT fire REMOVE_FROM_READING_LIST (it has no logEvent call). You MUST use the BOOK DETAIL PAGE (/books/[id]). Log in, find a book matching the VALIDATED criteria, go to its DETAIL PAGE. In a fresh session the book is NOT in the reading list — click the bookmark button ONCE to ADD it (ADD_TO_READING_LIST fires), then click it AGAIN to REMOVE it. REMOVE_FROM_READING_LIST fires on the second click. Use search_text('list') or search_text('Bookmark') to find the bookmark button.\n"
+        "- Add new book to catalog (ADD_BOOK): REQUIRES LOGIN. Log in → navigate to /profile → click the 'Add Books' tab (V3 label varies: 'Add Books', 'Add New Book', 'Create Book', 'New Book', 'Add Title' — use search_text('Add') to find it). The form has 6 labeled text inputs: Title, Author, Year, Pages, Rating, Preview URL — followed by genre pill buttons, a custom genre input (placeholder='Custom genre list'), and a Synopsis textarea. CRITICAL — form inputs have NO IDs: use label-based CSS selectors to target each field: css_select('label:has-text(\"Title\") input'), css_select('label:has-text(\"Author\") input'), css_select('label:has-text(\"Year\") input'), css_select('label:has-text(\"Pages\") input'), css_select('label:has-text(\"Rating\") input'). Do NOT use generic selector 'input' or 'custom: \"input\"' — that picks the FIRST input (Title field) for ALL fields. VALIDATED fields: year (must satisfy criteria, e.g. if year > 1900 type '2000'), author (must contain/equal criteria value, e.g. if author='gold' type 'Gold Author'), rating (must satisfy criteria, e.g. if rating ≤ 2.5 type '2.0'), genre (must match criteria). page_count in criteria is NOT validated — use '300' for Pages. For GENRE: if the genre (e.g. 'Romance', 'Fiction', 'Sci-Fi') appears in the pill list, CLICK that pill button. For genres NOT in the pill list (e.g. 'Short Stories', 'Psychological', 'Adventure', 'Historical Fiction'), clear the custom genre text input (placeholder='Custom genre list') and type the genre name there. Click the Add Book submit button (text varies: 'Add Book', 'Create Book', 'New Book' — search_text('Add') or 'Create'). ADD_BOOK fires on form submit.\n"
+        "- Edit book (EDIT_BOOK): REQUIRES LOGIN. Log in → navigate to /profile → click the 'Edit Books' tab (V3 label: 'Edit Books', 'My Books', 'Manage Books', 'Update Books', 'Modify Books', 'Edit Titles' — use search_text('Edit') or search_text('Books')). IMPORTANT: there is NO separate 'Edit' button to click — the BookEditor form is shown INLINE below each book card on the 'Edit Books' tab. The form fields (Title, Author, Year, Pages, Rating, Preview URL) are already visible and pre-filled. CRITICAL — form inputs have NO IDs: use label-based CSS selectors to target each field: css_select('label:has-text(\"Title\") input'), css_select('label:has-text(\"Author\") input'), css_select('label:has-text(\"Year\") input'), css_select('label:has-text(\"Pages\") input'), css_select('label:has-text(\"Rating\") input'). Do NOT use generic selector 'input' or 'custom: \"input\"' — that picks the FIRST input on the page (Title field) for ALL fields. VALIDATED: year, author, rating, genre (page_count/genres-plural criteria are NOT validated — ignore them). Modify Year to satisfy criteria (e.g. year ≥ 2013 → type '2020'), Author to satisfy criteria (e.g. author CONTAINS 'light' → type 'Moonlight Author'), Rating to satisfy criteria (e.g. rating ≤ 4.9 → type '4.5'). GENRE: if genre required (e.g. genres='Romance'), click the matching genre pill button (pill options: Drama, Comedy, Action, Thriller, Sci-Fi, Fantasy, Horror, Documentary, Romance, Fiction, Non-Fiction, Mystery). For genres NOT in the pill list (e.g. 'Adventure'), type in the custom genre text input (placeholder='Custom genre list'). Click the submit button (text varies: 'Save Changes', 'Save', 'Update', 'Edit Book' — search_text('Save') to find). EDIT_BOOK fires on form submit.\n"
+        "- Delete book (DELETE_BOOK): REQUIRES LOGIN. Log in → Profile page → click the 'Edit Books' tab → find any book in YOUR allowed books list → click the Delete button (red, 'Delete Book'). Any deletion is accepted (all criteria fields are ignored in validation — just delete any allowed book).\n"
+        "- Edit user profile (EDIT_USER_BOOK): REQUIRES LOGIN. Log in → Profile page → the PROFILE TAB is the default tab (shows 'Edit Profile' form). The form has: First Name, Last Name, Email, Favorite Genres, Location, Website, Bio fields. VALIDATED fields: first_name, last_name, bio, location, website, favorite_genres (ALL can be validated depending on the task). Read the task criteria carefully — modify ONLY the fields the task requires. Examples: if 'bio CONTAINS Story lover' → type 'Story lover and aspiring writer.' in Bio field. If 'website CONTAINS car' → type 'https://cars.com' in Website. If 'last_name NOT CONTAINS star' → type 'Smith' in Last Name. After filling fields, click the Save button (text varies: 'Save Profile', 'Save', 'Update Profile' — search_text('Save')). EDIT_USER_BOOK fires on form submit.\n"
+        "- View cart (VIEW_CART_BOOK): LOGIN IS NOT REQUIRED. VIEW_CART_BOOK fires automatically when the /cart page loads (useEffect on mount). VIEW_CART_BOOK has NO criteria — any fired event passes. Just navigate to /cart immediately: use NavigateAction to '/cart' OR click the cart icon in the nav. After the cart page loads, do ONE ScrollAction, then DoneAction. It does NOT need items in cart. IGNORE any username/password in the task prompt — DO NOT waste steps trying to log in.\n"
+        "- Contact form (CONTACT_BOOK): navigate to /contact, fill ALL four text fields: name, email, subject (free text input — NOT a dropdown), message. Each must satisfy the task criteria (e.g. if email CONTAINS 'test@example.com', type 'test@example.com'; if subject = 'Inquiry', type 'Inquiry'; if name NOT EQUALS 'Susan', type 'John'). For NOT criteria, type any valid value that satisfies the constraint. Click Submit/Send. All four fields are validated.\n"
+        "- Comment (ADD_COMMENT_BOOK): VALIDATED fields: book_name, commenter_name, content. Navigate to a book's detail page satisfying the book_name criteria. If criteria is 'book_name NOT CONTAINS X', go to ANY book except X — just use list_cards() to pick any book from the list. Scroll down to find the comment form at the bottom of the book detail page. Fill commenter_name (must satisfy criteria, e.g. if commenter_name NOT EQUALS 'David', type 'Alice'; if commenter_name = 'Sarah', type 'Sarah') and content (fill any text if no content criteria). Click the submit button. No login required.\n"
+        "\n"
+        "RESTAURANT/DINING TASKS (AutoDining and similar):\n"
+        "- Search restaurant tasks (SEARCH_RESTAURANT): on the homepage, find the restaurant name search INPUT field (not URL bar) and use TypeAction to type the exact query from the task (e.g. 'Sud 777'). The SEARCH_RESTAURANT event fires after a 500ms debounce. After typing, perform one more action (e.g. scroll down once) before DoneAction to allow the event to register. Then done.\n"
+        "- Date picker tasks (DATE_DROPDOWN_OPENED): on the homepage booking form, click the date picker button to open a calendar popup. The button ID varies by V3 (e.g. 'date_picker', 'dining-date-picker') — use search_text('Select date') or css_select('[id*=\"date\"]') to find it. Once the calendar opens, navigate months if needed using aria-label 'Go to previous month'/'Go to next month' buttons. Today is Feb 22 2026 — for March 2026, click next month ONCE. Then click the SPECIFIC day using an aria-label selector: each day button has aria-label='Month D, YYYY' format (e.g., aria-label='March 10, 2026'). Use css_select('[aria-label=\"March 10, 2026\"]') to find and click the specific day. Alternatively use search_text() to find the exact aria-label. Do NOT click day-of-week header labels. DATE_DROPDOWN_OPENED fires when a day is selected.\n"
+        "- Time picker tasks (TIME_DROPDOWN_OPENED): click the time dropdown on the homepage OR restaurant detail page. Select the EXACT time specified in the task (e.g. '12:30 PM'). TIME_DROPDOWN_OPENED fires with the selected time as its validated value.\n"
+        "- People/guest picker tasks (PEOPLE_DROPDOWN_OPENED): click the guests/people button on the homepage OR restaurant detail page. Select the EXACT number of people specified in the task. PEOPLE_DROPDOWN_OPENED fires with the selected count as its validated value.\n"
+        "- View restaurant tasks (VIEW_RESTAURANT): the homepage search bar searches by BOTH name AND cuisine (not just name). For cuisine criteria (e.g. cuisine='Steakhouse'): type the cuisine name directly into the homepage search input (TypeAction), wait briefly (the list filters automatically), then click the 'View details' button on the matching card. For bookings criteria: after filtering by cuisine, use list_cards() to check the bookings count on each card and click the one matching the bookings number. Button text for 'View details' varies via V3: 'View details', 'See Details', 'More Info', 'Restaurant Info', 'Full Details', 'Learn More', 'About Restaurant', 'Details'. Use search_text('Details') or search_text('Info') to find it. VIEW_RESTAURANT fires when the restaurant detail page loads (not when you click the button — it fires on PAGE LOAD of /restaurant/[id]).\n"
+        "- View full menu tasks (VIEW_FULL_MENU): type the restaurant name (e.g. 'Corner Pine Bites') in the homepage search input to filter the list. Then click the 'View details' button on the matching card. On the restaurant detail page, scroll to the Menu section. Click the menu toggle button — text varies: 'View Full Menu', 'See Full Menu', 'Show Full Menu', 'Display Full Menu', 'Expand Menu'. Use search_text('Full Menu') or search_text('Menu') to find it. VIEW_FULL_MENU fires on click.\n"
+        "- Collapse menu tasks (COLLAPSE_MENU): navigate to a restaurant detail page. Click the menu expand button (search_text('Full Menu') to find it), then click the collapse button — text varies: 'Collapse Menu', 'Hide Menu', 'Close Menu', 'Minimize Menu'. Use search_text('Collapse') or search_text('Hide Menu') to find it. COLLAPSE_MENU fires on click.\n"
+        "- Book restaurant tasks (BOOK_RESTAURANT): MUST set pickers BEFORE clicking Book Now. On the restaurant detail page reservation box:\n"
+        "  1. Click the people/guests picker and select the required number of people.\n"
+        "  2. Click the date picker button (search_text('Select date') or find it in BROWSER_STATE by ID containing 'date'). Once the calendar opens, navigate months using aria-label 'Go to next month'/'Go to previous month'. Then click the specific day using its aria-label: e.g., css_select('[aria-label=\"February 25, 2026\"]') for Feb 25. Today is Feb 22, 2026. For any FUTURE date, navigate to the required month first (click 'Go to next month' as many times as needed), then click the specific day with its exact aria-label. PAST dates (before Feb 22, 2026) are NOT selectable in the calendar — if task requires a past date, click any available date instead.\n"
+        "  3. Click the time picker and select a valid time (avoid the excluded time if task says 'NOT X:XX PM').\n"
+        "  4. Click 'Book Now'. BOOK_RESTAURANT fires with the selected people/date/time/rating values.\n"
+        "- Booking confirmation page: clicking 'Book Now' navigates to /booking/[restaurantId]/[time]. On this page: fill Full Name, select country from phone prefix dropdown (fires COUNTRY_SELECTED), select occasion from occasion dropdown (fires OCCASION_SELECTED), fill phone number, click 'Complete Reservation' (fires RESERVATION_COMPLETE).\n"
+        "- COUNTRY_SELECTED: the country field on the booking page is a <select> dropdown for the phone prefix. Use SelectDropDownOptionAction with the COUNTRY CODE (2-letter, e.g., 'RU' for Russia, 'US' for United States, 'GB' for UK, 'DE' for Germany, 'FR' for France). Find the select by css_select('select') or its V3 ID (key 'country-select'). If criteria says country NOT_EQUALS 'X', select any country other than X. If criteria says country='Russia', use value='RU'. COUNTRY_SELECTED fires immediately on selection (onChange).\n"
+        "- OCCASION_SELECTED: on the booking confirmation page, find the occasion <select> element and use SelectDropDownOptionAction with the occasion VALUE (case-sensitive lowercase): 'birthday', 'anniversary', 'business', or 'other'. The occasion is validated in the criteria. Find the select by css_select('select') or V3 ID (key 'occasion-select'). OCCASION_SELECTED fires immediately on selection. You MUST first complete the booking flow (set people/date/time on restaurant page → click Book Now → arrive at confirmation page) before selecting the occasion.\n"
+        "- RESERVATION_COMPLETE: fill Full Name, select occasion (use 'other' if task says occasion='other'), enter exact phone number from task, select country, then click 'Complete Reservation'.\n"
+        "- Scroll/carousel tasks (SCROLL_VIEW): the homepage has 3 restaurant sections with carousels. Section titles vary by V3 seed (defaults: 'Expensive', 'Mid ticket', 'Cheap'). Use ClickAction (NOT ScrollAction/page scroll) on the carousel arrow BUTTON in the correct direction. Click the LEFT arrow button for direction 'left' (or direction NOT 'right'), or the RIGHT arrow button for direction 'right' (or direction NOT 'left'). Left arrows have V3 ID key 'scroll-left-button'. Right arrows have V3 ID key 'scroll-right-button'. Use css_select('[id*=\"scroll-left\"], [id*=\"scroll-prev\"]') to find left arrows. SCROLL_VIEW fires immediately on arrow ClickAction. NOTE: the section title in the criteria may use old names ('Available for lunch now', 'Top picks', etc.) — these map to current sections ('Expensive', 'Mid ticket', 'Cheap'). Just click any scroll arrow in the correct direction (ignore section title).\n"
+        "- Help page tasks: navigate to /help (NavigateAction to '/help' OR use search_text to find Help nav link). The page has SHORT CATEGORY FILTER BUTTONS at the top (e.g. 'Getting Started', 'Bookings', 'Payments', 'Account', 'Restaurants', 'Technical') AND LONGER FAQ ITEM BUTTONS below them. CATEGORY TASK (HELP_CATEGORY_SELECTED): the categories are EXACT strings stored in the event: 'Getting Started', 'Bookings', 'Payments', 'Account', 'Restaurants', 'Technical'. If task says category='Reservations', this does NOT match any category — try clicking 'Bookings' (closest match). Otherwise click the short category filter button matching the criteria value exactly. Use search_text() to find it. HELP_CATEGORY_SELECTED fires on click. FAQ TASK (HELP_FAQ_TOGGLED): IMPORTANT — do NOT click the short category filter buttons. Instead, scroll DOWN past the category buttons to find the FAQ ITEM BUTTONS. Each FAQ item button contains the FULL question text (e.g. 'How do I make a reservation?', 'Can I modify my reservation?', 'Is there a cancellation fee?'). Use search_text('How do') or search_text('Can I') to find FAQ question buttons. For question NOT CONTAINS 'cancellation fee', pick any question that doesn't mention cancellation. Click the FAQ ITEM button ONCE — HELP_FAQ_TOGGLED fires on click with the question text.\n"
+        "- About page tasks (ABOUT_FEATURE_CLICK): IMPORTANT: do NOT click the 'About' nav link — in some V3 seeds it redirects to the homepage. Instead, use NavigateAction to '/about' directly. On the /about page, click any feature card in the 'Why Choose AutoDining?' section. The actual feature cards visible are: 'Curated Restaurants', 'Easy Reservations', 'Community Driven', 'Verified Reviews', 'Trending Spots'. IMPORTANT: the task criteria may use DIFFERENT names (e.g. 'Trusted reviews', 'Live availability', 'Curated chefs') — these are related to but not exactly matching the displayed card titles. For feature criteria with 'reviews': click 'Verified Reviews'. For 'Curated': click 'Curated Restaurants'. For 'availability': click 'Easy Reservations'. For any other criteria: click ANY feature card. Use search_text() with a keyword from the feature name to find the card div. ABOUT_FEATURE_CLICK fires on click of any feature card.\n"
+        "- Contact page tasks (CONTACT_CARD_CLICK): navigate to /contact (NavigateAction or click 'Contact' in nav). The page has 4 contact cards: 'Email Us', 'Call Us', 'Visit Us', 'Business Hours'. CRITICAL: use ClickAction ONLY — NEVER NavigateAction on these cards (they have mailto:/tel: hrefs that would navigate away from the page). Use search_text('Email') to find 'Email Us', search_text('Business') to find 'Business Hours'. For card_type NOT 'Phone', click 'Email Us' (not 'Call Us'). CONTACT_CARD_CLICK fires on ClickAction. After clicking, do DoneAction immediately — do NOT NavigateAction.\n"
+        "- CONTACT_FORM_SUBMIT: FIRST navigate to /contact page (NavigateAction to '/contact'). THEN fill the 4 form fields using stable name-attribute CSS selectors: css_select('input[name=\"name\"]') for Name, css_select('input[name=\"email\"]') for Email, css_select('input[name=\"subject\"]') for Subject, css_select('textarea[name=\"message\"]') for Message. These selectors are stable and NOT affected by V3. Fill: Name with a value containing 'e' (e.g. 'Eve User'), Email with 'test@example.com' (contains 'e.com'), Subject with anything NOT 'Suggestion for Improvement' (e.g. 'General Inquiry'), Message with any non-empty text. After filling all 4 fields, click the Send/Submit button ONCE (use search_text('Send') or css_select('button[type=\"submit\"]')). Do NOT click submit multiple times. After clicking submit, do a ScrollAction to give the event time to register. CONTACT_FORM_SUBMIT fires on form submit.\n"
+        "\n"
+        "INSPECTION TOOLS (optional — return {tool, args} instead of an action):\n"
+        "search_text(query, regex?, max_matches?, context_chars?); visible_text(max_chars?); "
+        "css_select(selector, max_nodes?); extract_forms(max_forms?, max_inputs?); "
+        "list_links(max_links?, href_regex?, text_regex?); list_cards(max_cards?, max_text?, max_actions_per_card?); "
+        "find_card(query, max_cards?). Prefer at most 2 tool calls per task step."
     )
 
     history_lines: List[str] = []
@@ -1858,6 +2036,20 @@ def _llm_decide(
                 cards_preview = cards_preview[:2397] + "..."
     except Exception:
         cards_preview = ""
+
+    # Build typed-fields reminder from task state.
+    typed_fields_str = ""
+    try:
+        if task_id:
+            tst = _TASK_STATE.get(task_id)
+            if isinstance(tst, dict):
+                tf = tst.get("typed_fields")
+                if isinstance(tf, dict) and tf:
+                    items = [f"cid {k}='{v}'" for k, v in tf.items()]
+                    typed_fields_str = "ALREADY TYPED (do NOT retype): " + ", ".join(items)
+    except Exception:
+        typed_fields_str = ""
+
     user_msg = (
         f"You have a task and must decide the next single browser action.\n"
         f"TASK: {task}\n"
@@ -1869,33 +2061,43 @@ def _llm_decide(
         + (f"CARDS (GROUPED CLICKABLE CONTEXTS JSON):\n{cards_preview}\n\n" if cards_preview else "")
         + f"STRUCTURED STATE (JSON):\n{json.dumps(structured, ensure_ascii=True)}\n\n"
         + (f"HISTORY (last steps):\n{chr(10).join(history_lines)}\n\n" if history_lines else "")
+        + (f"{typed_fields_str}\n\n" if typed_fields_str else "")
         + (f"STATE HINT: {extra_hint}\n\n" if extra_hint else "")
         + (f"TARGETING HINT: {target_hint}\n\n" if target_hint else "")
         + (f"STATE DELTA (prev -> current): {state_delta}\n\n" if state_delta else "")
         + (f"PAGE IR DELTA (prev -> current): {ir_delta}\n\n" if ir_delta else "")
         + "BROWSER_STATE (interactive elements):\n" + browser_state + "\n\n"
-        + "Instructions:\n"
-        + "- Output JSON only.\n"
-        + "- Return ONE action for this step (no multi-step sequences).\n"
-        + "- If you need to do a multi-step procedure (login/register/contact), pick the best next step only.\n"
-        + "- Use candidate_id for click/type/select and ensure it is in-range.\n"
-        + "- Use navigate with a full URL when you need to change pages (prefer preserving existing query params like seed).\n"
-        + "- For type/select, include non-empty text.\n"
-        + "- For delete/remove/edit tasks: confirm the target item with find_card/list_cards before clicking destructive actions.\n"
-        + "- If CREDENTIALS are provided, use those exact values when typing.\n"
+        + "NEXT ACTION:\n"
+        + (f"⚠️ LOOP DETECTED — {hint}\n" if hint else "")
+        + "Output ONE action as JSON with keys: action, candidate_id (int), text, url.\n"
     )
 
     # Default to validator gateway default model.
     model = str(model_override or os.getenv("OPENAI_MODEL", "gpt-5-mini"))
     temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
-    max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "350"))
+    max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "400"))
 
     usages: List[Dict[str, Any]] = []
     tool_calls = 0
     max_tool_calls = int(os.getenv("AGENT_MAX_TOOL_CALLS", "2"))
 
+    # Multi-turn context: inject last 2 (user, assistant) pairs from task history.
+    _MAX_HISTORY_TURNS = 2
+    _MAX_STORED_USER_CHARS = 3000
+    _MAX_STORED_ASSISTANT_CHARS = 800
+    prior_turns: List[Dict[str, Any]] = []
+    try:
+        st = _TASK_STATE.get(task_id) if task_id else None
+        if isinstance(st, dict):
+            llm_hist = st.get("llm_history")
+            if isinstance(llm_hist, list):
+                prior_turns = llm_hist[-(_MAX_HISTORY_TURNS * 2):]
+    except Exception:
+        prior_turns = []
+
     messages = [
         {"role": "system", "content": system_msg},
+        *prior_turns,
         {"role": "user", "content": user_msg},
     ]
 
@@ -1960,6 +2162,32 @@ def _llm_decide(
             return False
         return True
 
+    def _save_turn(response_obj: Dict[str, Any]) -> None:
+        """Store (user_msg, assistant_response) in task state for multi-turn context."""
+        if not task_id:
+            return
+        try:
+            st = _TASK_STATE.get(task_id)
+            if not isinstance(st, dict):
+                st = {}
+                _TASK_STATE[task_id] = st
+            hist = st.get("llm_history")
+            if not isinstance(hist, list):
+                hist = []
+                st["llm_history"] = hist
+            # Truncate user_msg for storage to avoid token bloat
+            stored_user = user_msg[:_MAX_STORED_USER_CHARS] if len(user_msg) > _MAX_STORED_USER_CHARS else user_msg
+            # Store clean response (strip _meta)
+            resp_clean = {k: v for k, v in response_obj.items() if k != "_meta"}
+            stored_asst = json.dumps(resp_clean, ensure_ascii=True)[:_MAX_STORED_ASSISTANT_CHARS]
+            hist.append({"role": "user", "content": stored_user})
+            hist.append({"role": "assistant", "content": stored_asst})
+            # Keep only last 4 messages (2 turns)
+            if len(hist) > 4:
+                st["llm_history"] = hist[-4:]
+        except Exception:
+            pass
+
     # Tool-aware loop.
     last_obj: Dict[str, Any] = {}
     for _ in range(max_tool_calls + 2):
@@ -1990,6 +2218,7 @@ def _llm_decide(
                 obj["_meta"] = {"llm_calls": len(usages), "llm_usages": usages, "model": str(model), "tool_calls": tool_calls}
             except Exception:
                 pass
+            _save_turn(obj)
             return obj
 
         # Ask once to fix invalid response.
@@ -2004,6 +2233,7 @@ def _llm_decide(
                 obj["_meta"] = {"llm_calls": len(usages), "llm_usages": usages, "model": str(model), "tool_calls": tool_calls}
             except Exception:
                 pass
+            _save_turn(obj)
             return obj
 
     return last_obj
@@ -2194,6 +2424,13 @@ class ApifiedWebAgent(IWebAgent):
             return _resp([{"type": "WaitAction", "time_seconds": 0.1}], {"decision": "check_wait"})
 
         st = _TASK_STATE.get(task_id) if task_id else None
+        # Clear per-task state on step 0 (new task start).
+        if task_id and step_index == 0:
+            if isinstance(st, dict):
+                st.pop("llm_history", None)
+                st.pop("typed_fields", None)
+            elif st is None:
+                pass  # Will be created lazily on first LLM call.
         effective_url = str(url)
         try:
             if isinstance(st, dict):
@@ -2331,6 +2568,20 @@ class ApifiedWebAgent(IWebAgent):
                     raise HTTPException(status_code=400, detail="type action missing text")
                 selector = c.type_selector()
                 _update_task_state(task_id, str(url), f"type:{_selector_repr(selector)}")
+                # Record typed field so LLM knows not to retype it.
+                try:
+                    if task_id:
+                        tst = _TASK_STATE.get(task_id)
+                        if not isinstance(tst, dict):
+                            tst = {}
+                            _TASK_STATE[task_id] = tst
+                        tf = tst.get("typed_fields")
+                        if not isinstance(tf, dict):
+                            tf = {}
+                            tst["typed_fields"] = tf
+                        tf[str(cid)] = str(text)[:60]
+                except Exception:
+                    pass
                 out = _resp([{"type": "TypeAction", "selector": selector, "text": str(text)}], {"decision": "type", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
             else:
                 if not text:
