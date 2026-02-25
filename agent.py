@@ -1872,9 +1872,10 @@ def _llm_decide(
         "You are an expert web automation agent. Given the task, page state, and history, choose ONE next action. "
         "Return JSON only — no markdown, no explanation outside JSON. "
         "Return a JSON object with keys: action, candidate_id, text, url. "
-        "action must be one of: click,type,select,navigate,scroll_down,scroll_up,done. "
-        "For click/type/select: candidate_id must be an integer from the BROWSER_STATE list (the number inside [..]). "
+        "action must be one of: click,double_click,triple_click,submit,type,select,navigate,scroll_down,scroll_up,done. "
+        "For click/double_click/triple_click/submit/type/select: candidate_id must be an integer from the BROWSER_STATE list (the number inside [..]). "
         "For type/select: text must be non-empty. "
+        "Use double_click only if a single click did not open or activate the target. Use triple_click to select all existing text in an input before typing new content. Use submit on a filled input as an alternative when the submit/search button cannot be found. "
         "Preserve current URL query parameters (especially ?seed=N) in any navigate URL.\n"
         "\n"
         "NAVIGATION RULES:\n"
@@ -2073,7 +2074,7 @@ def _llm_decide(
     )
 
     # Default to validator gateway default model.
-    model = str(model_override or os.getenv("OPENAI_MODEL", "gpt-5-mini"))
+    model = str(model_override or os.getenv("OPENAI_MODEL", "gpt-5.2"))
     temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
     max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "400"))
 
@@ -2128,7 +2129,7 @@ def _llm_decide(
 
     def _valid_action(obj: Dict[str, Any]) -> bool:
         a = (obj.get("action") or "").lower()
-        if a not in {"click", "type", "select", "navigate", "scroll_down", "scroll_up", "done"}:
+        if a not in {"click", "double_click", "triple_click", "submit", "type", "select", "navigate", "scroll_down", "scroll_up", "done"}:
             return False
         if a == "navigate":
             u = obj.get("url")
@@ -2429,6 +2430,8 @@ class ApifiedWebAgent(IWebAgent):
             if isinstance(st, dict):
                 st.pop("llm_history", None)
                 st.pop("typed_fields", None)
+                st.pop("seen_cand_sigs", None)
+                st.pop("seen_cand_url", None)
             elif st is None:
                 pass  # Will be created lazily on first LLM call.
         effective_url = str(url)
@@ -2460,6 +2463,24 @@ class ApifiedWebAgent(IWebAgent):
                     extra_hint = "You appear stuck on the same URL after repeating an action. Choose a different element or scroll."
         except Exception:
             extra_hint = ""
+        # Smart scroll: detect when no new candidates have appeared since the last scroll.
+        try:
+            if task_id and isinstance(st, dict):
+                cur_url = str(url)
+                # Reset seen sigs when the page URL has changed since last step.
+                if str(st.get("seen_cand_url") or "") != cur_url:
+                    st.pop("seen_cand_sigs", None)
+                seen_sigs: set[str] = set(st.get("seen_cand_sigs") or [])
+                cur_sigs: set[str] = {_selector_repr(c.selector) for c in candidates}
+                new_sigs = cur_sigs - seen_sigs
+                last_sig = str(st.get("last_sig") or "")
+                if not new_sigs and last_sig == "scroll_down" and seen_sigs:
+                    scroll_hint = "SCROLL BOTTOM REACHED — no new elements appeared since last scroll_down. Stop scrolling and choose a different action."
+                    extra_hint = ((extra_hint + " ") if extra_hint else "") + scroll_hint
+                st["seen_cand_sigs"] = list(seen_sigs | cur_sigs)
+                st["seen_cand_url"] = cur_url
+        except Exception:
+            pass
         try:
             risk_hint = _task_risk_hint(task=task, step_index=int(step_index), candidates=candidates)
             if risk_hint:
@@ -2589,6 +2610,12 @@ class ApifiedWebAgent(IWebAgent):
                 selector = c.type_selector()
                 _update_task_state(task_id, str(url), f"select:{_selector_repr(selector)}")
                 out = _resp([{"type": "SelectDropDownOptionAction", "selector": selector, "text": str(text), "timeout_ms": int(os.getenv("AGENT_SELECT_TIMEOUT_MS", "4000"))}], {"decision": "select", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
+        elif action in {"double_click", "triple_click", "submit"} and isinstance(cid, int) and 0 <= cid < len(candidates):
+            c = candidates[cid]
+            selector = c.click_selector()
+            _update_task_state(task_id, str(url), f"{action}:{_selector_repr(selector)}")
+            iwa_type = {"double_click": "DoubleClickAction", "triple_click": "TripleClickAction", "submit": "SubmitAction"}[action]
+            out = _resp([{"type": iwa_type, "selector": selector}], {"decision": action, "candidate_id": int(cid), "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
         else:
             if candidates and step_index < 5:
                 selector = candidates[0].click_selector()
