@@ -1231,6 +1231,33 @@ def _parse_llm_json(content: str) -> Dict[str, Any]:
     return obj
 
 
+# ---------------------------------------------------------------------------
+# IWA action type name → agent lowercase name mapping.
+# The validator sends history with IWA PascalCase type names (e.g. "ClickAction"),
+# but the agent uses lowercase names (e.g. "click").  Normalize before comparing.
+# ---------------------------------------------------------------------------
+_IWA_TO_AGENT: Dict[str, str] = {
+    "clickaction": "click",
+    "doubleclickaction": "double_click",
+    "tripleclickaction": "triple_click",
+    "typeaction": "type",
+    "selectaction": "select",
+    "selectdropdownoptionaction": "select",
+    "navigateaction": "navigate",
+    "scrollaction": "scroll_down",
+    "waitaction": "wait",
+    "submitaction": "submit",
+    "doneaction": "done",
+    "hoveraction": "hover",
+}
+
+
+def _norm_action(raw: str) -> str:
+    """Normalize IWA PascalCase type names or agent lowercase names to agent lowercase."""
+    key = str(raw or "").lower().replace("_", "")
+    return _IWA_TO_AGENT.get(key, str(raw or "").lower())
+
+
 def _history_hint(history: List[Dict[str, Any]] | None) -> str:
     if not history:
         return ""
@@ -1240,7 +1267,7 @@ def _history_hint(history: List[Dict[str, Any]] | None) -> str:
     # Detect same candidate typed multiple times — field is already filled.
     type_cid_counts: Dict[Any, int] = {}
     for h in last:
-        if str(h.get("action") or "") == "type":
+        if _norm_action(h.get("action") or "") == "type":
             cid = h.get("candidate_id")
             type_cid_counts[cid] = type_cid_counts.get(cid, 0) + 1
     for cid, cnt in type_cid_counts.items():
@@ -1253,7 +1280,7 @@ def _history_hint(history: List[Dict[str, Any]] | None) -> str:
     # Detect same candidate clicked multiple times — toggle/button already acted.
     click_cid_counts: Dict[Any, int] = {}
     for h in last:
-        if str(h.get("action") or "") == "click":
+        if _norm_action(h.get("action") or "") == "click":
             cid = h.get("candidate_id")
             click_cid_counts[cid] = click_cid_counts.get(cid, 0) + 1
     for cid, cnt in click_cid_counts.items():
@@ -1268,7 +1295,7 @@ def _history_hint(history: List[Dict[str, Any]] | None) -> str:
     repeats = 0
     prev = None
     for h in last:
-        k = (str(h.get("action") or ""), h.get("candidate_id"))
+        k = (_norm_action(h.get("action") or ""), h.get("candidate_id"))
         if prev is not None and k == prev and k != ("", None):
             repeats += 1
         prev = k
@@ -1278,14 +1305,14 @@ def _history_hint(history: List[Dict[str, Any]] | None) -> str:
 
     # Detect form-fill loop: last 3+ steps are all TypeAction (filling fields without submitting).
     recent = last[-4:]
-    if len(recent) >= 3 and all(str(h.get("action") or "") == "type" for h in recent):
+    if len(recent) >= 3 and all(_norm_action(h.get("action") or "") == "type" for h in recent):
         return (
             "You have been filling form fields for several steps. "
             "If all required fields are filled (check ALREADY TYPED list), click the submit/save/send button NOW."
         )
 
     # Detect click-only loop: last 4+ steps are all ClickAction (toggle/button stuck).
-    if len(recent) >= 4 and all(str(h.get("action") or "") == "click" for h in recent):
+    if len(recent) >= 4 and all(_norm_action(h.get("action") or "") == "click" for h in recent):
         return (
             "You have clicked buttons for several steps. "
             "If the task action (add/remove/share/toggle) was performed on the first click, use done. "
@@ -1866,6 +1893,7 @@ def _llm_decide(
     ir_delta: str = "",
     prev_sig_set: set[str] | None = None,
     model_override: str = "",
+    web_project_id: str = "",
 ) -> Dict[str, Any]:
     browser_state = _format_browser_state(candidates=candidates, prev_sig_set=prev_sig_set)
     system_msg = (
@@ -2015,7 +2043,7 @@ def _llm_decide(
     history_lines: List[str] = []
     for h in (history or [])[-6:]:
         step = h.get("step", "?")
-        action = h.get("action", "")
+        action = _norm_action(h.get("action") or "")
         cid = h.get("candidate_id")
         text = h.get("text", "")
         ok = h.get('exec_ok', True)
@@ -2053,7 +2081,8 @@ def _llm_decide(
 
     user_msg = (
         f"You have a task and must decide the next single browser action.\n"
-        f"TASK: {task}\n"
+        + (f"SITE: {web_project_id}\n" if web_project_id else "")
+        + f"TASK: {task}\n"
         f"STEP: {int(step_index)}\n"
         f"URL: {url}\n\n"
         + (f"PAGE IR (PRIMARY STRUCTURED STATE):\n{page_ir_text}\n\n" if page_ir_text else "")
@@ -2396,6 +2425,7 @@ class ApifiedWebAgent(IWebAgent):
         return_metrics = os.getenv("AGENT_RETURN_METRICS", "0").lower() in {"1", "true", "yes"}
         html = payload.get("snapshot_html") or ""
         history = payload.get("history") if isinstance(payload.get("history"), list) else None
+        web_project_id = str(payload.get("web_project_id") or "").strip()
         page_summary = _summarize_html(html)
         dom_digest = _dom_digest(html)
         task = str(task or "")
@@ -2487,6 +2517,17 @@ class ApifiedWebAgent(IWebAgent):
                 extra_hint = ((extra_hint + " ") if extra_hint else "") + risk_hint
         except Exception:
             pass
+        # Fix 3: Surface exec_ok=False from last history step as an explicit hint so
+        # the LLM knows its previous action failed and avoids repeating it.
+        try:
+            if history and isinstance(history, list):
+                last_h = history[-1]
+                if isinstance(last_h, dict) and not last_h.get("exec_ok", True):
+                    err_msg = str(last_h.get("error") or "unknown")[:100]
+                    fail_hint = f"LAST ACTION FAILED ({err_msg}). Try a different element or approach."
+                    extra_hint = ((extra_hint + " ") if extra_hint else "") + fail_hint
+        except Exception:
+            pass
         try:
             target_hint = str(payload.get("target_hint") or os.getenv("AGENT_TARGET_HINT", "")).strip()
         except Exception:
@@ -2513,6 +2554,7 @@ class ApifiedWebAgent(IWebAgent):
                 ir_delta=ir_delta,
                 prev_sig_set=prev_sig_set,
                 model_override=model_override,
+                web_project_id=web_project_id,
             )
         except Exception as e:
             if _LOG_ERRORS:
@@ -2537,6 +2579,7 @@ class ApifiedWebAgent(IWebAgent):
                 out = _resp([{"type": "WaitAction", "time_seconds": 1.0}], {"decision": "navigate_missing_url"})
             else:
                 nav_url = _resolve_url(nav_url_raw, effective_url or str(url))
+                nav_url = _preserve_seed_url(nav_url, effective_url or str(url))
                 if _same_path_query(nav_url, effective_url, base_a=effective_url, base_b=""):
                     _update_task_state(task_id, str(url), "navigate_same_url_scroll")
                     out = _resp([{ "type": "ScrollAction", "down": True, "up": False}], {"decision": "scroll_override"})
