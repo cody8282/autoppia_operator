@@ -81,11 +81,13 @@ def _normalize_demo_url(raw_url: str | None) -> str:
                     path = parsed.path or ""
                     if not path:
                         return "http://localhost"
-                    return urlunsplit(("http", "localhost", path, parsed.query, parsed.fragment))
+                    port_str = f":{parsed.port}" if parsed.port else ""
+                    return urlunsplit(("http", f"localhost{port_str}", path, parsed.query, parsed.fragment))
                 normalized = f"/{normalized}"
             return f"http://localhost{normalized}"
         parsed = urlsplit(normalized)
-        return urlunsplit(("http", "localhost", parsed.path or "/", parsed.query, parsed.fragment))
+        port_str = f":{parsed.port}" if parsed.port else ""
+        return urlunsplit(("http", f"localhost{port_str}", parsed.path or "/", parsed.query, parsed.fragment))
     except Exception:
         return "http://localhost/"
 
@@ -1930,6 +1932,12 @@ def _llm_decide(
         "- To search: type the query in the search input field, then click the Search/Go button.\n"
         "- done when search results are DISPLAYED on the page — do NOT click individual result links.\n"
         "- The goal is to fire the search event, NOT to navigate to a specific item's detail page.\n"
+        "\n"
+        "FIND SPECIFIC ITEM STRATEGY:\n"
+        "- If the task requires an item with a SPECIFIC attribute (duration, rating, price, bookings, cuisine, year, etc.), use list_cards() on the listing page to scan all visible items and find one matching the exact attribute.\n"
+        "- Do NOT scroll through the page hoping to spot the item — use list_cards() first to read all items efficiently.\n"
+        "- If list_cards() does not surface the item, use the site's search or filter UI (search input, genre dropdown, filter buttons) to narrow results.\n"
+        "- Once you identify the matching item, click on it to navigate to its detail page.\n"
         "\n"
         "PROFILE/ADMIN TASKS (add/edit/delete/manage items):\n"
         "- These always require login first. If you are not logged in, click the Login link in the nav and log in.\n"
