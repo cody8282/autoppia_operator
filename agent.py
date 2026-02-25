@@ -1450,23 +1450,32 @@ def _same_path_query(a: str, b: str, *, base_a: str = "", base_b: str = "") -> b
     except Exception:
         return (a or "").strip() == (b or "").strip()
 
-def _preserve_seed_url(target_url: str, current_url: str) -> str:
-    """If current_url has a seed param, ensure target_url keeps it.
+_PROPAGATE_KEYS = ("seed", "web_agent_id", "validator_id")
 
-    Demo webs are seeded; the validator expects the seed to stay consistent across navigations.
+def _preserve_seed_url(target_url: str, current_url: str) -> str:
+    """Propagate seed, web_agent_id, and validator_id from current_url into target_url.
+
+    Demo webs are seeded; the validator expects seed, web_agent_id, and validator_id to stay
+    consistent across navigations so that frontend events are attributed to the correct agent.
     """
     try:
         from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
         cur = urlparse(current_url or "")
         tgt = urlparse(target_url or "")
-        cur_seed = (parse_qs(cur.query).get("seed") or [None])[0]
-        if not cur_seed:
+        cur_params = parse_qs(cur.query)
+        tgt_params = parse_qs(tgt.query)
+        changed = False
+        for key in _PROPAGATE_KEYS:
+            cur_val = (cur_params.get(key) or [None])[0]
+            if not cur_val:
+                continue
+            if (tgt_params.get(key) or [None])[0] == str(cur_val):
+                continue
+            tgt_params[key] = [str(cur_val)]
+            changed = True
+        if not changed:
             return target_url
-        q = parse_qs(tgt.query)
-        if (q.get("seed") or [None])[0] == str(cur_seed):
-            return target_url
-        q["seed"] = [str(cur_seed)]
-        new_q = urlencode(q, doseq=True)
+        new_q = urlencode(tgt_params, doseq=True)
         fixed = tgt._replace(query=new_q)
         if not fixed.scheme and not fixed.netloc:
             return urlunparse(("", "", fixed.path, fixed.params, fixed.query, fixed.fragment))
@@ -1904,12 +1913,12 @@ def _llm_decide(
         "For click/double_click/triple_click/submit/type/select: candidate_id must be an integer from the BROWSER_STATE list (the number inside [..]). "
         "For type/select: text must be non-empty. "
         "Use double_click only if a single click did not open or activate the target. Use triple_click to select all existing text in an input before typing new content. Use submit on a filled input as an alternative when the submit/search button cannot be found. "
-        "Preserve current URL query parameters (especially ?seed=N) in any navigate URL.\n"
+        "Preserve current URL query parameters (seed, web_agent_id, validator_id) in any navigate URL.\n"
         "\n"
         "NAVIGATION RULES:\n"
         "- ALWAYS prefer clicking links over navigate. Clicking preserves URL params automatically.\n"
         "- Look for login/register/contact/search links in nav/header/footer before navigating.\n"
-        "- CRITICAL: If you must use navigate, copy the EXACT origin (scheme+host+port) from the current URL shown in 'URL:' above. If URL is 'http://localhost:8001/...' use 'http://localhost:8001/...' not 'http://localhost/...' (the port number is REQUIRED).\n"
+        "- CRITICAL: If you must use navigate, keep the same scheme and host as the current URL above. Do NOT change host to a different domain.\n"
         "- Do NOT use done just because you navigated to a relevant page. done means task fully complete.\n"
         "\n"
         "CREDENTIAL RULES:\n"
@@ -2083,7 +2092,7 @@ def _llm_decide(
         f"You have a task and must decide the next single browser action.\n"
         + (f"SITE: {web_project_id}\n" if web_project_id else "")
         + f"TASK: {task}\n"
-        f"STEP: {int(step_index)}\n"
+        f"STEP: {int(step_index)}/{int(os.getenv('AGENT_MAX_STEPS', '12'))}\n"
         f"URL: {url}\n\n"
         + (f"PAGE IR (PRIMARY STRUCTURED STATE):\n{page_ir_text}\n\n" if page_ir_text else "")
         + f"CURRENT STATE (TEXT SUMMARY):\n{page_summary}\n\n"
@@ -2240,7 +2249,11 @@ def _llm_decide(
             # IMPORTANT: tools must inspect snapshot_html, not dom_digest. We'll attach snapshot_html via closure.
             # This placeholder is replaced below.
             messages.append({"role": "assistant", "content": json.dumps({"tool": tool, "args": args}, ensure_ascii=True)})
-            messages.append({"role": "user", "content": "TOOL_RESULT " + tool + ": " + json.dumps(result, ensure_ascii=True)})
+            result_str = json.dumps(result, ensure_ascii=True)
+            max_tool_result_chars = int(os.getenv("AGENT_TOOL_RESULT_MAX_CHARS", "3000"))
+            if len(result_str) > max_tool_result_chars:
+                result_str = result_str[:max_tool_result_chars] + "..."
+            messages.append({"role": "user", "content": "TOOL_RESULT " + tool + ": " + result_str})
             continue
 
         if _valid_action(obj):
@@ -2455,15 +2468,10 @@ class ApifiedWebAgent(IWebAgent):
             return _resp([{"type": "WaitAction", "time_seconds": 0.1}], {"decision": "check_wait"})
 
         st = _TASK_STATE.get(task_id) if task_id else None
-        # Clear per-task state on step 0 (new task start).
+        # Clear per-task state on step 0 (new task start) — full wipe to avoid stale state.
         if task_id and step_index == 0:
-            if isinstance(st, dict):
-                st.pop("llm_history", None)
-                st.pop("typed_fields", None)
-                st.pop("seen_cand_sigs", None)
-                st.pop("seen_cand_url", None)
-            elif st is None:
-                pass  # Will be created lazily on first LLM call.
+            _TASK_STATE[task_id] = {}
+            st = _TASK_STATE[task_id]
         effective_url = str(url)
         try:
             if isinstance(st, dict):
